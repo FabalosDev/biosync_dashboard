@@ -1,105 +1,775 @@
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 
+/** ===== Types ===== */
+type ButtonStatus = "approved" | "rejected" | null;
+
+type ButtonStates = Record<
+  string,
+  {
+    status: ButtonStatus;
+    timestamp: number;
+  }
+>;
+
+// Content (manual/user)
+export interface ContentRow {
+  id: string;
+  rowNumber: number;
+  inputText: string; // A
+  headline: string; // U
+  caption: string; // C
+  approval: string; // D
+  feedback: string; // E
+  imageGenerated: string; // F
+  imageQuery: string; // J
+  columnHStatus: string; // H (normalized)
+  regeneratedImage: string; // K
+  status: "Approved" | "Rejected" | "Pending";
+  link: string; // O
+  priority: string; // P
+  truthScore: string; // Q
+  category: string; // R
+  keywords: string; // S
+  dup: string; // T
+  uid: string; // M/N
+  timestamp: number;
+  sheet: "text/image";
+  pubDate: string; // AA (26)
+}
+
+// News Content (manual)
+export interface NewsRow {
+  id: string;
+  rowNumber: number;
+  actualArrayIndex: number;
+  headline: string;
+  caption: string;
+  articleAuthors: string;
+  source: string;
+  link: string;
+  pubDate: string;
+  creator: string;
+  status: "Approved" | "Rejected" | "Pending";
+  timestamp: number;
+  sheet: "HEALTH NEWS USA- THUMBNAILS";
+  imageGenerated: string;
+  approval: string;
+  keywords: string;
+  priority: string;
+  category: string;
+  truthScore: string;
+  dup: string;
+  columnHStatus?: string; // optional if you want News to rely on H as well
+}
+
+// News RSS
+export interface RssNewsRow {
+  id: string;
+  rowNumber: number;
+  actualArrayIndex: number;
+  title: string; // J
+  contentSnippet: string; // L
+  source: string; // H
+  link: string; // F
+  creator: string; // I
+  date: string; // D
+  proceedToProduction: string; // control cell (varies)
+  status: "Approved" | "Rejected" | "Pending";
+  timestamp: number;
+  sheet: "HNN RSS";
+  uid: string; // C
+  type: string; // M
+  truthScore: string; // N
+  keywords: string; // Q
+  dup: string; // R
+  category: string; // T
+  priority: string; // U
+}
+
+// Media RSS (general)
+export interface RssRow {
+  id: string;
+  rowNumber: number;
+  actualArrayIndex: number;
+  title: string;
+  contentSnippet: string;
+  source: string;
+  link: string;
+  creator: string;
+  date: string;
+  proceedToProduction: string;
+  status: "Approved" | "Rejected" | "Pending";
+  timestamp: number;
+  sheet: "Thumbnail System";
+  uid: string;
+  type: string;
+  truthScore: string;
+  keywords: string;
+  dup: string;
+  category: string;
+  priority: string;
+}
+
+/** ===== Dentistry (manual + RSS) ===== */
+export interface DentistryRow {
+  id: string;
+  rowNumber: number;
+  actualArrayIndex: number;
+  imageGenerated: string;
+  headline: string;
+  caption: string;
+  source: string;
+  link: string;
+  pubDate: string;
+  status: "Approved" | "Rejected" | "Pending";
+  timestamp: number;
+  sheet: "DENTAL" | "Dentistry";
+  keywords: string;
+  priority: string;
+  category: string;
+  truthScore: string;
+  dup: string;
+  columnHStatus: string; // normalized Column H
+  hCell: string; // raw Column H (for debugging)
+}
+
+export interface RssDentistryRow {
+  id: string;
+  rowNumber: number;
+  actualArrayIndex: number;
+  title: string;
+  contentSnippet: string;
+  source: string;
+  link: string;
+  creator: string;
+  date: string;
+  proceedToProduction: string;
+  status: "Approved" | "Rejected" | "Pending";
+  timestamp: number;
+  sheet: "DENTISTRY RSS";
+  uid: string;
+  type: string;
+  truthScore: string;
+  keywords: string;
+  dup: string;
+  category: string;
+  priority: string;
+}
+
+type TimelineRow = Record<string, unknown>;
+
+/** ===== Hook ===== */
 export const useContentManagement = () => {
   const { toast } = useToast();
-  const [contentData, setContentData] = useState([]);
-  const [newsData, setNewsData] = useState([]);
-  const [journalsData, setJournalsData] = useState([]);
-  const [rssData, setRssData] = useState([]);
-  const [timelineData, setTimelineData] = useState([]);
-  const [approvedData, setApprovedData] = useState([]);
-  const [publishedData, setPublishedData] = useState([]);
+
+  // Data
+  const [contentData, setContentData] = useState<ContentRow[]>([]);
+  const [newsData, setNewsData] = useState<NewsRow[]>([]);
+  const [rssNewsData, setRssNewsData] = useState<RssNewsRow[]>([]);
+  const [rssData, setRssData] = useState<RssRow[]>([]);
+  const [dentistryData, setDentistryData] = useState<DentistryRow[]>([]);
+  const [rssDentistryData, setRssDentistryData] = useState<RssDentistryRow[]>(
+    []
+  );
+  const [timelineData, setTimelineData] = useState<TimelineRow[]>([]);
+  const [approvedData, setApprovedData] = useState<ContentRow[]>([]);
+  const [publishedData, setPublishedData] = useState<ContentRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  
   const [dashboardStats, setDashboardStats] = useState({
     total: 0,
-    pending: 0,
+    pending: 0, // shows ONLY "pending approval"
     approved: 0,
     published: 0,
     pendingBreakdown: {
       no: 0,
       regenerated: 0,
       pendingApproval: 0,
-      empty: 0
-    }
+      empty: 0,
+    },
   });
 
   const [trackingStats, setTrackingStats] = useState({
     approved: 0,
     sentForRegeneration: 0,
     pendingApproval: 0,
-    published: 0
+    published: 0,
   });
 
-  const [buttonStates, setButtonStates] = useState<{[key: string]: { status: 'approved' | 'rejected' | null, timestamp: number }}>({});
+  const [buttonStates, setButtonStates] = useState<ButtonStates>({});
 
+  /** ===== Sheet constants & URLs ===== */
   const CONTENT_SHEET_ID = "1C1fnywWU1RMUQ4UmoKBurT7pI7WaffX2pn-6T45wVtY";
-  const NEWS_SHEET_ID = "1iSxzNxIuG6JmiPVLxRZF376gJD3U6xe7fB8dNrzc7fw";
-  const JOURNALS_SHEET_ID = "1TeZhjan2E8HVGuNomh7BfTm5csghIS1ygr0QHKtaKA4";
-  const RSS_SHEET_ID = "1YiEnWas3sHs3CIaMCVDnxoE8cU5xBQO2OLX-UEArppI";
+  const NEWS_SHEET_ID = "1FNumIx65f0J1OoU8MWX4KwROQwis-TFB_rmwmr3e-WU";
+  const RSS_NEWS_SHEET_ID = "1u6hNIrJM91COY54xzQrBDU6rfzrBIRpk2XhKHQawfsI";
+  const RSS_SHEET_ID = "1u6hNIrJM91COY54xzQrBDU6rfzrBIRpk2XhKHQawfsI";
+  const DENTIST_SHEET_ID = "1C1fnywWU1RMUQ4UmoKBurT7pI7WaffX2pn-6T45wVtY";
+  const RSS_DENTIST_SHEET_ID = "1u6hNIrJM91COY54xzQrBDU6rfzrBIRpk2XhKHQawfsI";
 
   const CONTENT_SHEET_URL = `https://docs.google.com/spreadsheets/d/${CONTENT_SHEET_ID}/gviz/tq?tqx=out:json&sheet=text/image`;
-  const NEWS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${NEWS_SHEET_ID}/gviz/tq?tqx=out:json`;
-  const JOURNALS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${JOURNALS_SHEET_ID}/gviz/tq?tqx=out:json`;
-  const RSS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${RSS_SHEET_ID}/gviz/tq?tqx=out:json`;
+  const NEWS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${NEWS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=HEALTH%20NEWS%20USA-%20THUMBNAILS`;
+  const RSS_NEWS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${RSS_NEWS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=HNN%20RSS`;
+  const RSS_SHEET_URL = `https://docs.google.com/spreadsheets/d/${RSS_SHEET_ID}/gviz/tq?tqx=out:json&sheet=Thumbnail%20System`;
+  const DENTIST_SHEET_URL = `https://docs.google.com/spreadsheets/d/${DENTIST_SHEET_ID}/gviz/tq?tqx=out:json&sheet=DENTAL`;
+  const RSS_DENTIST_SHEET_URL = `https://docs.google.com/spreadsheets/d/${RSS_DENTIST_SHEET_ID}/gviz/tq?tqx=out:json&sheet=Dental%20RSS`;
 
-  // Helper functions
-  const createItemKey = (item: any) => {
-    return `${item.sheet}-${item.rowNumber || item.row}-${item.id}`;
+  /** ===== Helpers ===== */
+  const parseGViz = (text: string) => {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end < 0) throw new Error("Invalid GViz payload");
+    return JSON.parse(text.slice(start, end + 1)) as {
+      table?: { rows?: Array<{ c?: Array<{ v?: unknown; f?: unknown }> }> };
+    };
+  };
+  // put this helper near your other helpers (cellVal, pickFirst)
+  const getRssStatus = (c: Array<{ v?: unknown; f?: unknown }>) => {
+    // Column S = index 18
+    const raw = String(
+      ((c[18] as any)?.f ?? (c[18] as any)?.v ?? "") as string
+    ).trim();
+    const pretty = raw || "<EMPTY>";
+    if (!raw) {
+      console.warn("[RSS] Status (col S) is empty on a row", {
+        status: pretty,
+      });
+    }
+    return raw;
   };
 
-  const isItemProcessed = (item: any) => {
-    const itemKey = createItemKey(item);
-    return buttonStates[itemKey]?.status !== null && buttonStates[itemKey]?.status !== undefined;
+  // normalize & match the RSS gate value from Column S
+  const isRssSuccess = (raw: unknown) => {
+    const v = String(raw ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    return v === "rss_success";
   };
 
-  // Updated filter function to show content based on column H status
-  const filterUnprocessedItems = (data: any[], contentType: string) => {
-    console.log(`🔍 Filtering ${contentType} data:`, data.length, 'total items');
-    
-    const filtered = data.filter(item => {
-      // Check if the item is already processed by user action
-      if (isItemProcessed(item)) {
-        console.log(`⏭️ Item already processed:`, item.id);
-        return false;
-      }
-      
-      // Show items based on content type
-      if (contentType === 'content') {
-        // Show items that need review: NO, REGENERATED, PENDING APPROVAL, PENDING REVIEW, or empty
-        const columnHValue = item.columnHStatus?.toLowerCase?.() || '';
-        const isPending = columnHValue === 'no' || 
-                         columnHValue === 'regenerated' || 
-                         columnHValue === 'pending approval' || 
-                         columnHValue === 'pending review' ||
-                         columnHValue === 'pending' ||
-                         columnHValue === '';
-        console.log(`📋 Content item ${item.id}: columnH="${item.columnHStatus}", isPending=${isPending}`);
-        return isPending;
-      } else if (contentType === 'news') {
-        const isEmpty = !item.proceedToProduction || item.proceedToProduction === '';
-        console.log(`📰 News item ${item.id}: proceedToProduction="${item.proceedToProduction}", isEmpty=${isEmpty}`);
-        return isEmpty;
-      } else if (contentType === 'journals') {
-        const isEmpty = !item.proceedToProduction || item.proceedToProduction === '';
-        console.log(`📚 Journal item ${item.id}: proceedToProduction="${item.proceedToProduction}", isEmpty=${isEmpty}`);
-        return isEmpty;
-      } else if (contentType === 'rss') {
-        const isEmpty = !item.proceedToProduction || item.proceedToProduction === '';
-        console.log(`📡 RSS item ${item.id}: proceedToProduction="${item.proceedToProduction}", isEmpty=${isEmpty}`);
-        return isEmpty;
-      }
-      
-      return true;
+  const extractUrlFromHyperlink = (s: string): string | null => {
+    if (!s) return null;
+    const m1 = s.match(/=HYPERLINK\(\s*"([^"]+)"/i);
+    if (m1?.[1]) return m1[1];
+    const m2 = s.match(/href="([^"]+)"/i);
+    if (m2?.[1]) return m2[1];
+    const m3 = s.match(/https?:\/\/[^\s"'<>]+/i);
+    if (m3?.[0]) return m3[0];
+    return null;
+  };
+
+  const normalizePublishCell = (raw: unknown): string => {
+    const s = String(raw ?? "").trim();
+    if (!s) return "";
+    return extractUrlFromHyperlink(s) ?? s;
+  };
+
+  const isPublishedStatus = (raw: string): boolean => {
+    const s = normalizePublishCell(raw);
+    if (!s) return false;
+    const parts = s.split(/[,\|\s]+/).filter(Boolean);
+    return parts.some((p) => {
+      const x = p.toLowerCase();
+      if (/^\d{12,22}$/.test(x)) return true;
+      if (/^urn:li:(share|activity|ugcpost):\d+$/i.test(p)) return true;
+      if (/linkedin\.com\/.*(share|activity|ugcpost)/i.test(p)) return true;
+      if (/(facebook\.com|fb\.watch|fb\.me)/i.test(p)) return true;
+      if (/(twitter\.com|x\.com)\/.+\/status\/\d+/i.test(p)) return true;
+      if (/^https?:\/\//i.test(p)) return true;
+      if (/\b(posted|published)\b/i.test(p)) return true;
+      return false;
     });
-    
-    console.log(`✅ Filtered ${contentType}: ${filtered.length} items remaining`);
-    return filtered;
   };
 
-  // Update dashboard stats to include all content types
-  const updateDashboardStats = () => {
+  // Create a unique local key per row
+  const createItemKey = useCallback(
+    (item: { sheet: string; rowNumber?: number; row?: number; id: string }) =>
+      `${item.sheet}-${item.rowNumber ?? item.row ?? 0}-${item.id}`,
+    []
+  );
+
+  const isItemProcessed = useCallback(
+    (item: { sheet: string; rowNumber?: number; row?: number; id: string }) => {
+      const itemKey = createItemKey(item);
+      const status = buttonStates[itemKey]?.status;
+      return status !== null && status !== undefined;
+    },
+    [buttonStates, createItemKey]
+  );
+
+  // replace your existing norm with this one
+  const norm = (s: unknown) =>
+    String(s ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, " "); // spaces, underscores, dashes → single space
+
+  // TEMP (lenient) during testing
+  const isPendingApproval = (raw: unknown) => {
+    const v = norm(raw);
+    return (
+      v === "pending approval" ||
+      v === "pending" ||
+      v === "pending review" ||
+      v === "review"
+    );
+  };
+  // LATER (strict):
+  // const isPendingApproval = (raw: unknown) => norm(raw) === "pending approval";
+
+  /** ===== Small cell helpers (RSS) ===== */
+  const cellVal = (
+    c: Array<{ v?: unknown; f?: unknown }>,
+    idx: number
+  ): string =>
+    String(((c[idx] as any)?.f ?? (c[idx] as any)?.v ?? "") as string).trim();
+
+  const pickFirst = (
+    c: Array<{ v?: unknown; f?: unknown }>,
+    candidates: number[]
+  ): string => {
+    for (const i of candidates) {
+      const v = cellVal(c, i);
+      if (v) return v;
+    }
+    return "";
+  };
+
+  /** ===== Fetchers ===== */
+  const fetchContentData = useCallback(async () => {
+    try {
+      const res = await fetch(CONTENT_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+
+      const rows = (json.table?.rows ?? [])
+        .map((row, idx): ContentRow => {
+          const c = row.c ?? [];
+          const hCell = (c[7] ?? {}) as { v?: unknown; f?: unknown };
+          const columnHStatus = normalizePublishCell(
+            (hCell as any).f ?? (hCell as any).v ?? ""
+          );
+          return {
+            id: `content-${idx}`,
+            rowNumber: idx + 2,
+            inputText: String(c[0]?.v ?? ""),
+            headline: String(c[20]?.v ?? ""),
+            caption: String(c[2]?.v ?? ""),
+            approval: String(c[3]?.v ?? ""),
+            feedback: String(c[4]?.v ?? ""),
+            imageGenerated: String(c[5]?.v ?? ""),
+            imageQuery: String(c[9]?.v ?? ""),
+            columnHStatus,
+            regeneratedImage: String(c[10]?.v ?? ""),
+            status:
+              c[3]?.v === "YES"
+                ? "Approved"
+                : c[3]?.v === "NO"
+                ? "Rejected"
+                : "Pending",
+            timestamp: Date.now() - idx * 1000,
+            sheet: "text/image",
+            link: String(c[14]?.v ?? ""),
+            priority: String(c[15]?.v ?? ""),
+            truthScore: String(c[16]?.v ?? ""),
+            category: String(c[17]?.v ?? ""),
+            keywords: String(c[18]?.v ?? ""),
+            dup: (c[21]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
+            uid: String(c[13]?.v ?? ""),
+            pubDate: String(c[26]?.v ?? ""),
+          };
+        })
+        .reverse();
+
+      setContentData(rows);
+
+      const approved = rows.filter((r) => r.columnHStatus === "YES");
+      const published = rows.filter((r) => isPublishedStatus(r.columnHStatus));
+      setApprovedData(approved);
+      setPublishedData(published);
+    } catch (e) {
+      console.error("Error fetching content:", e);
+    }
+  }, [CONTENT_SHEET_URL]);
+
+  const fetchNewsData = useCallback(async () => {
+    try {
+      const res = await fetch(NEWS_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+      const totalRows = json.table?.rows?.length ?? 0;
+
+      const all = (json.table?.rows ?? []).map((row, idx): NewsRow => {
+        const c = row.c ?? [];
+        const actualRowNumber = totalRows - idx + 1;
+
+        // existing approval (often YES/NO or empty)
+        const approval = String(c[9]?.v ?? "").trim();
+
+        // ✅ NEW: read Column H (index 7) as the control cell (Pending Approval)
+        const hCell = (c[7] ?? {}) as { v?: unknown; f?: unknown };
+        const columnHStatus = normalizePublishCell(
+          (hCell as any).f ?? (hCell as any).v ?? ""
+        );
+
+        // keep your original status derivation (YES/NO → Approved/Rejected, else Pending)
+        const status: NewsRow["status"] =
+          approval === "YES"
+            ? "Approved"
+            : approval === "NO"
+            ? "Rejected"
+            : "Pending";
+
+        return {
+          id: `news-${idx}`,
+          rowNumber: actualRowNumber,
+          actualArrayIndex: idx,
+          headline: String(c[7]?.v ?? ""),
+          caption: String(c[8]?.v ?? ""),
+          articleAuthors: String(c[3]?.v ?? ""),
+          source: String(c[11]?.v ?? ""),
+          link: String(c[1]?.v ?? ""),
+          pubDate: String(c[2]?.v ?? ""),
+          creator: String(c[3]?.v ?? ""),
+          status, // keep
+          timestamp: Date.now() - idx * 1000,
+          sheet: "HEALTH NEWS USA- THUMBNAILS",
+          imageGenerated: String(c[6]?.v ?? ""),
+          approval, // keep
+          keywords: String(c[18]?.v ?? ""),
+          priority: String(c[19]?.v ?? ""),
+          category: String(c[20]?.v ?? ""),
+          truthScore: String(c[21]?.v ?? ""),
+          dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
+
+          // ✅ add this:
+          columnHStatus,
+        } as any as NewsRow;
+      });
+
+      // Optional: if your “pending” items are older than last 100, remove the slice.
+      setNewsData(all.slice(-100).reverse());
+    } catch (e) {
+      console.error("Error fetching news:", e);
+    }
+  }, [NEWS_SHEET_URL]);
+
+  /** News RSS (HNN RSS) — same logic as other RSS */
+  const fetchRssNewsData = useCallback(async () => {
+    try {
+      const res = await fetch(RSS_NEWS_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+      const totalRows = json.table?.rows?.length ?? 0;
+
+      const all = (json.table?.rows ?? []).map((row, idx): RssNewsRow => {
+        const c = row.c ?? [];
+        const actualRowNumber = totalRows - idx + 1;
+
+        const title = cellVal(c, 9);
+        const contentSnippet = cellVal(c, 11);
+        const link = cellVal(c, 5);
+        const date = cellVal(c, 3);
+        const creator = cellVal(c, 8);
+        const source = cellVal(c, 7);
+
+        // Column S (index 18) for Status
+        const stateRaw = cellVal(c, 18);
+        const state = norm(stateRaw);
+
+        const status: RssNewsRow["status"] =
+          state === "approved" || state === "posted"
+            ? "Approved"
+            : state === "rejected"
+            ? "Rejected"
+            : "Pending";
+
+        return {
+          id: `hnn-${idx}`,
+          rowNumber: actualRowNumber,
+          actualArrayIndex: idx,
+
+          title,
+          contentSnippet,
+          source,
+          link,
+          creator,
+          date,
+
+          // store raw Status
+          proceedToProduction: stateRaw,
+          status,
+
+          timestamp: Date.now() - idx * 1000,
+          sheet: "HNN RSS",
+
+          uid: cellVal(c, 2),
+          type: cellVal(c, 12),
+          truthScore: cellVal(c, 13),
+          keywords: cellVal(c, 16),
+          dup: cellVal(c, 17),
+          category: cellVal(c, 19),
+          priority: cellVal(c, 20),
+        };
+      });
+
+      setRssNewsData(all.slice(-100).reverse());
+    } catch (e) {
+      console.error("Error fetching rssNews:", e);
+    }
+  }, [RSS_NEWS_SHEET_URL]);
+
+  /** Media RSS */
+  const fetchRssData = useCallback(async () => {
+    try {
+      const res = await fetch(RSS_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+      const totalRows = json.table?.rows?.length ?? 0;
+
+      const all = (json.table?.rows ?? []).map((row, idx): RssRow => {
+        const c = row.c ?? [];
+        const actualRowNumber = totalRows - idx + 1;
+
+        // Column S (index 18) is the Status written by n8n: RSS_Success, drafted, approved, posted, rejected
+        const stateRaw = cellVal(c, 18);
+        const state = norm(stateRaw);
+
+        const status: RssRow["status"] =
+          state === "approved" || state === "posted"
+            ? "Approved"
+            : state === "rejected"
+            ? "Rejected"
+            : "Pending";
+
+        return {
+          id: `rss-${idx}`,
+          rowNumber: actualRowNumber,
+          actualArrayIndex: idx,
+          title: cellVal(c, 9),
+          contentSnippet: cellVal(c, 11),
+          source: cellVal(c, 7),
+          link: cellVal(c, 5),
+          creator: cellVal(c, 8),
+          date: cellVal(c, 3),
+
+          // store the raw Status column S here so filterUnprocessedItems can check 'rss_success'
+          proceedToProduction: stateRaw,
+          status,
+
+          uid: cellVal(c, 2),
+          type: cellVal(c, 12),
+          truthScore: cellVal(c, 13),
+          keywords: cellVal(c, 16),
+          dup: cellVal(c, 17),
+          category: cellVal(c, 19),
+          priority: cellVal(c, 20),
+
+          timestamp: Date.now() - idx * 1000,
+          sheet: "Thumbnail System",
+        };
+      });
+
+      setRssData(all.slice(-100).reverse());
+    } catch (e) {
+      console.error("Error fetching RSS:", e);
+      setRssData([]);
+    }
+  }, [RSS_SHEET_URL]);
+
+  /** Dentistry (Column H like Content) */
+  const fetchDentistryData = useCallback(async () => {
+    try {
+      const res = await fetch(DENTIST_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+
+      const rows = json.table?.rows ?? [];
+      if (!rows.length) {
+        setDentistryData([]);
+        return;
+      }
+
+      const val = (c: Array<{ v?: unknown; f?: unknown }>, i: number) =>
+        String(((c[i] as any)?.f ?? (c[i] as any)?.v ?? "") as string).trim();
+
+      const mapped = rows
+        .map((row, idx): DentistryRow | null => {
+          const c = row.c ?? [];
+          const rowNumber = idx + 2;
+
+          const headline = val(c, 20);
+          const caption = val(c, 2);
+          const source = val(c, 11);
+          const link = val(c, 14);
+          const pubDate = val(c, 26);
+          const imageGenerated = val(c, 5);
+          const keywords = val(c, 18);
+          const priority = val(c, 15);
+          const category = val(c, 17);
+          const truthScore = val(c, 16);
+          const dupRaw = val(c, 21);
+
+          // Column H (index 7)
+          const hCellObj = (c[7] ?? {}) as { v?: unknown; f?: unknown };
+          const rawH = (hCellObj as any).f ?? (hCellObj as any).v ?? "";
+          const columnHStatus = normalizePublishCell(rawH);
+
+          // derive status from H
+          const hNorm = norm(columnHStatus);
+          const status: DentistryRow["status"] =
+            hNorm === "yes"
+              ? "Approved"
+              : hNorm === "no"
+              ? "Rejected"
+              : "Pending";
+
+          // drop rows that are truly empty (avoid header junk)
+          if (
+            [
+              headline,
+              caption,
+              link,
+              pubDate,
+              keywords,
+              priority,
+              category,
+              truthScore,
+            ].every((v) => v === "")
+          ) {
+            return null;
+          }
+
+          return {
+            id: `dent-${idx}`,
+            rowNumber,
+            actualArrayIndex: idx,
+            headline,
+            caption,
+            source,
+            link,
+            pubDate,
+            imageGenerated,
+            status,
+            timestamp: Date.now() - idx * 1000,
+            sheet: "DENTAL",
+            keywords,
+            priority,
+            category,
+            truthScore,
+            dup: dupRaw ? "YES" : "NO",
+            columnHStatus,
+            hCell: String(rawH ?? ""),
+          };
+        })
+        .filter((r): r is DentistryRow => r !== null)
+        .reverse();
+
+      setDentistryData(mapped);
+    } catch (e) {
+      console.error("Error fetching dentistry:", e);
+      setDentistryData([]);
+    }
+  }, [DENTIST_SHEET_URL]);
+
+  /** Dentistry RSS (now wired) */
+  /** Dentistry RSS (now wired to Column S = status) */
+  const fetchRssDentistryData = useCallback(async () => {
+    try {
+      const res = await fetch(RSS_DENTIST_SHEET_URL); // ...sheet=Dental%20RSS
+      const txt = await res.text();
+      const json = parseGViz(txt);
+
+      const totalRows = json.table?.rows?.length ?? 0;
+
+      const all = (json.table?.rows ?? []).map((row, idx): RssDentistryRow => {
+        const c = row.c ?? [];
+        const actualRowNumber = totalRows - idx + 1;
+
+        // ✅ Column S (index 18) carries the pipeline status: RSS_Success, drafted, approved, posted, rejected
+        const stateRaw = getRssStatus(c); // cellVal(c, 18) wrapped + logs if empty
+
+        return {
+          id: `rss-dent-${idx}`,
+          rowNumber: actualRowNumber,
+          actualArrayIndex: idx,
+          title: cellVal(c, 9),
+          contentSnippet: cellVal(c, 11),
+          source: cellVal(c, 7),
+          link: cellVal(c, 5),
+          creator: cellVal(c, 8),
+          date: cellVal(c, 3),
+          proceedToProduction: stateRaw, // used by filters
+          status: stateRaw, // mirror (handy in UI)
+          timestamp: Date.now() - idx * 1000,
+          sheet: "Dental RSS", // exact tab name
+          uid: cellVal(c, 2),
+          type: cellVal(c, 12),
+          truthScore: cellVal(c, 13),
+          keywords: cellVal(c, 16),
+          dup: cellVal(c, 17),
+          category: cellVal(c, 19),
+          priority: cellVal(c, 20),
+        };
+      });
+
+      setRssDentistryData(all.slice(-100).reverse());
+    } catch (e) {
+      console.error("Error fetching Dentistry RSS:", e);
+      setRssDentistryData([]);
+    }
+  }, [RSS_DENTIST_SHEET_URL]);
+  /** Timeline */
+  const fetchTimelineData = useCallback(async () => {
+    try {
+      const res = await fetch(
+        "https://biohackyourself.app.n8n.cloud/webhook-test/approvalschedule"
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as TimelineRow[];
+      setTimelineData(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error("Error fetching timeline:", e);
+      setTimelineData([]);
+    }
+  }, []);
+
+  /** ===== Filtering (unified & shared) ===== */
+  const filterUnprocessedItems = useCallback(
+    /* ... */ (data, contentType) => {
+      return data.filter((item) => {
+        if (
+          isItemProcessed({
+            sheet: item.sheet,
+            id: item.id,
+            rowNumber: item.rowNumber,
+          })
+        )
+          return false;
+
+        if (contentType === "content" || contentType === "dentistry") {
+          return isPendingApproval((item as any).columnHStatus);
+        }
+
+        if (contentType === "news") {
+          return isPendingApproval((item as any).columnHStatus); // if you moved News to use Column H too
+        }
+
+        // ✅ ALL RSS must be exactly RSS_Success in Column S
+        if (
+          contentType === "rss" ||
+          contentType === "rssNews" ||
+          contentType === "rssDentistry"
+        ) {
+          return isRssSuccess((item as any).proceedToProduction);
+        }
+
+        return false;
+      });
+    },
+    [isItemProcessed]
+  );
+  /** ===== Stats ===== */
+  const updateDashboardStats = useCallback(() => {
     let totalCount = 0;
     let approvedCount = 0;
     let publishedCount = 0;
@@ -107,46 +777,36 @@ export const useContentManagement = () => {
     let regeneratedCount = 0;
     let pendingApprovalCount = 0;
     let emptyCount = 0;
+    let sentForRegenerationCount = 0;
 
-    // Count content data - only count rows that have data in column C (caption)
-    contentData.forEach((item: any) => {
-      // Only count if column C (caption) has data
-      if (item.caption && item.caption.trim() !== '') {
+    contentData.forEach((item) => {
+      if (item.caption && item.caption.trim() !== "") {
         totalCount++;
-        const columnHValue = item.columnHStatus;
-        const columnHLower = columnHValue?.toLowerCase?.() || '';
-        
-        if (columnHValue === "YES") {
+
+        const h = item.columnHStatus;
+        const hLower = (h || "").toLowerCase();
+
+        if (h === "YES") {
           approvedCount++;
-        } else if (columnHValue && (
-          columnHValue.match(/^\d{17}$/) || // 17-digit numbers like 18143252281397147
-          columnHValue.startsWith('urn:li:share:') // LinkedIn URN shares
-        )) {
+        } else if (isPublishedStatus(h)) {
           publishedCount++;
         } else {
-          // Count pending breakdown
-          if (columnHLower === 'no') {
+          if (hLower === "no") {
             noCount++;
-          } else if (columnHLower === 'regenerated') {
+            sentForRegenerationCount++;
+          } else if (hLower === "regenerated") {
             regeneratedCount++;
-          } else if (columnHLower === 'pending approval' || columnHLower === 'pending review' || columnHLower === 'pending') {
+            sentForRegenerationCount++;
+          } else if (hLower === "pending approval") {
             pendingApprovalCount++;
-          } else if (columnHLower === '') {
+          } else if (hLower === "") {
             emptyCount++;
           }
         }
       }
     });
 
-    // Don't count news, journals, or RSS data in the main dashboard stats
-    // Only content data should be counted for the main dashboard
-    
-    // Note: News, journals, and RSS data are not included in main dashboard counts
-    // as per user requirements - only content data with column C data should be counted
-
-    // Calculate pending count - items that are truly pending (not processed)
-    // Exclude approved (YES), rejected (NO), regenerated, and published items
-    const pendingCount = totalCount - publishedCount - approvedCount - noCount - regeneratedCount;
+    const pendingCount = pendingApprovalCount;
 
     setDashboardStats({
       total: totalCount,
@@ -157,399 +817,247 @@ export const useContentManagement = () => {
         no: noCount,
         regenerated: regeneratedCount,
         pendingApproval: pendingApprovalCount,
-        empty: emptyCount
-      }
-    });
-
-    // Update tracking stats as well - use column H for content items
-    let sentForRegenerationCount = 0;
-    contentData.forEach((item: any) => {
-      if (item.caption && item.caption.trim() !== '') { // Only count items with data in column C
-        const columnHValue = item.columnHStatus?.toLowerCase?.() || '';
-        if (columnHValue === "no" || columnHValue === "regenerated") {
-          sentForRegenerationCount++;
-        }
-      }
+        empty: emptyCount,
+      },
     });
 
     setTrackingStats({
       approved: approvedCount,
       sentForRegeneration: sentForRegenerationCount,
-      pendingApproval: pendingCount,
-      published: publishedCount
+      pendingApproval: pendingApprovalCount,
+      published: publishedCount,
     });
-  };
+  }, [contentData]);
 
-  // Delete content handler
-  const handleDeleteContent = async (item: any) => {
-    try {
+  /** ===== Action handlers ===== */
+  const setItemState = useCallback(
+    (
+      item: { sheet: string; rowNumber?: number; row?: number; id: string },
+      status: Exclude<ButtonStatus, null>
+    ) => {
       const itemKey = createItemKey(item);
-      setButtonStates(prev => {
-        const newState = { ...prev };
-        delete newState[itemKey];
-        return newState;
+      setButtonStates((prev) => ({
+        ...prev,
+        [itemKey]: { status, timestamp: Date.now() },
+      }));
+    },
+    [createItemKey]
+  );
+
+  const handleDeleteContent = useCallback(
+    (item: { sheet: string; rowNumber?: number; row?: number; id: string }) => {
+      const key = createItemKey(item);
+      setButtonStates((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
       });
-      
       toast({
         title: "Content Deleted",
-        description: "Content has been removed from your local view",
+        description: "Removed from local view",
       });
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to delete content",
-        variant: "destructive",
+    },
+    [createItemKey, toast]
+  );
+
+  // Content/manual/news
+  const handleContentApproval = useCallback(
+    (item: ContentRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleContentRejection = useCallback(
+    (item: ContentRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  const handleNewsApproval = useCallback(
+    (item: NewsRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleNewsRejection = useCallback(
+    (item: NewsRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  // rssNews
+  const handleRssNewsApproval = useCallback(
+    (item: RssNewsRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleRssNewsRejection = useCallback(
+    (item: RssNewsRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  // Media RSS
+  const handleRssContentApproval = useCallback(
+    (item: RssRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleRssContentRejection = useCallback(
+    (item: RssRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  // Dentistry (manual + rss)
+  const handleDentistryApproval = useCallback(
+    (item: DentistryRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleDentistryRejection = useCallback(
+    (item: DentistryRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  const handleRssDentistryApproval = useCallback(
+    (item: RssDentistryRow) => setItemState(item, "approved"),
+    [setItemState]
+  );
+  const handleRssDentistryRejection = useCallback(
+    (item: RssDentistryRow) => setItemState(item, "rejected"),
+    [setItemState]
+  );
+
+  const handleUndo = useCallback(
+    (item: { sheet: string; rowNumber?: number; row?: number; id: string }) => {
+      const key = createItemKey(item);
+      setButtonStates((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
       });
-    }
-  };
+    },
+    [createItemKey]
+  );
 
-  // Approval handlers
-  const handleContentApproval = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'approved', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
+  const getButtonState = useCallback(
+    (item: {
+      sheet: string;
+      rowNumber?: number;
+      row?: number;
+      id: string;
+    }): ButtonStatus => {
+      const key = createItemKey(item);
+      return buttonStates[key]?.status ?? null;
+    },
+    [buttonStates, createItemKey]
+  );
 
-  const handleContentRejection = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'rejected', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleNewsApproval = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'approved', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleNewsRejection = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'rejected', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleJournalApproval = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'approved', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleJournalRejection = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'rejected', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleRssApproval = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'approved', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleRssRejection = async (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => ({ 
-      ...prev, 
-      [itemKey]: { 
-        status: 'rejected', 
-        timestamp: new Date().getTime() 
-      } 
-    }));
-  };
-
-  const handleUndo = (item: any) => {
-    const itemKey = createItemKey(item);
-    setButtonStates(prev => {
-      const newState = { ...prev };
-      delete newState[itemKey];
-      return newState;
-    });
-  };
-
-  const getButtonState = (item: any): 'approved' | 'rejected' | null => {
-    const itemKey = createItemKey(item);
-    return buttonStates[itemKey]?.status || null;
-  };
-
-  // Simplified data fetching functions without debouncing
-  const fetchContentData = async () => {
-    try {
-      console.log('📡 Fetching content data...');
-      const response = await fetch(CONTENT_SHEET_URL);
-      const text = await response.text();
-      const json = JSON.parse(text.substr(47).slice(0, -2));
-      
-      const rows = json.table.rows.map((row: any, index: number) => ({
-        id: `content-${index}`,
-        rowNumber: index + 2,
-        inputText: row.c[0]?.v || "", // Column A - INPUT TEXT (contains links)
-        imageGenerated: row.c[5]?.v || "",
-        headline: row.c[1]?.v || "",
-        caption: row.c[2]?.v || "",
-        approval: row.c[3]?.v || "", // Column D - this is the approval status
-        feedback: row.c[4]?.v || "",
-        imageQuery: row.c[6]?.v || "",
-        columnHStatus: row.c[7]?.v || "", // Column H - this is what we check for "pending approval"
-        regeneratedImage: row.c[11]?.v || "",
-        status: row.c[3]?.v === "YES" ? "Approved" : row.c[3]?.v === "NO" ? "Rejected" : "Pending",
-        timestamp: new Date().getTime() - index * 1000,
-        sheet: "text/image"
-      })).reverse();
-      
-      console.log('✅ Content data fetched:', rows.length, 'items');
-      console.log('📋 Sample content items:', rows.slice(0, 3).map(r => ({ id: r.id, columnHStatus: r.columnHStatus })));
-      
-      setContentData(rows);
-      
-      const approved = rows.filter(item => item.columnHStatus === "YES");
-      const published = rows.filter(item => item.columnHStatus && item.columnHStatus.match(/^\d{17}$/));
-      
-      setApprovedData(approved);
-      setPublishedData(published);
-    } catch (error) {
-      console.error("❌ Error fetching content data:", error);
-    }
-  };
-
-  const fetchNewsData = async () => {
-    try {
-      const response = await fetch(NEWS_SHEET_URL);
-      const text = await response.text();
-      const json = JSON.parse(text.substr(47).slice(0, -2));
-      
-      const totalRows = json.table.rows.length;
-      const allRows = json.table.rows.map((row: any, index: number) => {
-        const actualRowNumber = totalRows - index + 1;
-        return {
-          id: `news-${index}`,
-          rowNumber: actualRowNumber,
-          actualArrayIndex: index,
-          title: row.c[0]?.v || "",
-          articleText: row.c[2]?.v || "",
-          articleAuthors: row.c[3]?.v || "",
-          source: row.c[4]?.v || "",
-          proceedToProduction: row.c[5]?.v || "",
-          status: row.c[5]?.v === "YES" ? "Approved" : row.c[5]?.v === "NO" ? "Rejected" : "Pending",
-          timestamp: new Date().getTime() - index * 1000,
-          sheet: "news api"
-        };
-      });
-      
-      const latest100 = allRows.slice(-100).reverse();
-      
-      setNewsData(latest100);
-    } catch (error) {
-      console.error("Error fetching news data:", error);
-    }
-  };
-
-  const fetchJournalsData = async () => {
-    try {
-      const response = await fetch(JOURNALS_SHEET_URL);
-      const text = await response.text();
-      const json = JSON.parse(text.substr(47).slice(0, -2));
-      
-      const totalRows = json.table.rows.length;
-      const allRows = json.table.rows.map((row: any, index: number) => {
-        const actualRowNumber = totalRows - index + 1;
-        return {
-          id: `journal-${index}`,
-          rowNumber: actualRowNumber,
-          actualArrayIndex: index,
-          articleTitle: row.c[0]?.v || "",
-          articleAuthors: row.c[1]?.v || "",
-          articleText: row.c[3]?.v || "",
-          proceedToProduction: row.c[4]?.v || "",
-          status: row.c[4]?.v === "YES" ? "Approved" : row.c[4]?.v === "NO" ? "Rejected" : "Pending",
-          timestamp: new Date().getTime() - index * 1000,
-          sheet: "journals"
-        };
-      });
-      
-      const latest100 = allRows.slice(-100).reverse();
-      
-      setJournalsData(latest100);
-    } catch (error) {
-      console.error("Error fetching journals data:", error);
-    }
-  };
-
-  const fetchRssData = async () => {
-    try {
-      console.log('🔄 Fetching RSS data from:', RSS_SHEET_URL);
-      const response = await fetch(RSS_SHEET_URL);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const text = await response.text();
-      console.log('📋 RSS raw text length:', text.length);
-      
-      if (text.length < 50) {
-        console.warn('⚠️ RSS response too short:', text);
-        setRssData([]);
-        return;
-      }
-      
-      const json = JSON.parse(text.substr(47).slice(0, -2));
-      console.log('📊 RSS JSON parsed:', json.table?.rows?.length || 0, 'rows');
-      
-      if (!json.table?.rows) {
-        console.warn('⚠️ No RSS table data found');
-        setRssData([]);
-        return;
-      }
-      
-      const totalRows = json.table.rows.length;
-      const allRows = json.table.rows.map((row: any, index: number) => {
-        const actualRowNumber = totalRows - index + 1;
-        return {
-          id: `rss-${index}`,
-          rowNumber: actualRowNumber,
-          actualArrayIndex: index,
-          title: row.c[4]?.v || "",           // Column E: title
-          contentSnippet: row.c[0]?.v || "", // Column A: contentSnippet
-          source: row.c[3]?.v || "",         // Column D: source
-          link: row.c[5]?.v || "",           // Column F: link
-          creator: row.c[1]?.v || "",        // Column B: creator
-          date: row.c[2]?.v || "",           // Column C: date
-          proceedToProduction: row.c[14]?.v || "", // Column O: "Proceed to production"
-          status: row.c[14]?.v === "YES" ? "Approved" : row.c[14]?.v === "NO" ? "Rejected" : "Pending",
-          timestamp: new Date().getTime() - index * 1000,
-          sheet: "RSS"
-        };
-      });
-      
-      const latest100 = allRows.slice(-100).reverse();
-      console.log('✅ RSS data processed:', latest100.length, 'items');
-      
-      setRssData(latest100);
-    } catch (error) {
-      console.error("❌ Error fetching RSS data:", error);
-      setRssData([]);
-    }
-  };
-
-  const fetchTimelineData = async () => {
-    try {
-      const response = await fetch("https://biohackyourself.app.n8n.cloud/webhook-test/approvalschedule");
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = await response.json();
-      setTimelineData(data || []);
-    } catch (error) {
-      console.error("Error fetching timeline data:", error);
-      // Set empty array if fetch fails to prevent breaking other data
-      setTimelineData([]);
-    }
-  };
-
-  // Simplified fetchAllData without debouncing
-  const fetchAllData = async () => {
-    if (isLoading) {
-      console.log('🛑 Data fetch already in progress, skipping...');
-      return;
-    }
-
-    console.log('🚀 Starting data fetch...');
+  /** ===== Fetch-all ===== */
+  const fetchAllData = useCallback(async () => {
+    if (isLoading) return;
     setIsLoading(true);
-    
     try {
       await Promise.allSettled([
         fetchContentData(),
         fetchNewsData(),
-        fetchJournalsData(),
+        fetchRssNewsData(),
         fetchRssData(),
-        fetchTimelineData()
+        fetchDentistryData(),
+        fetchRssDentistryData(),
+        fetchTimelineData(),
       ]);
-      console.log('✅ All data fetched successfully');
-    } catch (error) {
-      console.error('❌ Error in fetchAllData:', error);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [
+    isLoading,
+    fetchContentData,
+    fetchNewsData,
+    fetchRssNewsData,
+    fetchRssData,
+    fetchDentistryData,
+    fetchRssDentistryData,
+    fetchTimelineData,
+  ]);
 
-  // Update stats whenever data changes
+  /** ===== Effects ===== */
   useEffect(() => {
     updateDashboardStats();
-  }, [contentData, newsData, journalsData, rssData, buttonStates]);
+  }, [contentData, buttonStates, updateDashboardStats]);
 
+  /** ===== Pending lists (memoized) ===== */
+  const pendingContent = useMemo(
+    () => filterUnprocessedItems(contentData, "content"),
+    [contentData, filterUnprocessedItems]
+  );
+  const pendingNews = useMemo(
+    () => filterUnprocessedItems(newsData, "news"),
+    [newsData, filterUnprocessedItems]
+  );
+  const pendingRss = useMemo(
+    () => filterUnprocessedItems(rssData, "rss"),
+    [rssData, filterUnprocessedItems]
+  );
+  const pendingRssNews = useMemo(
+    () => filterUnprocessedItems(rssNewsData, "rssNews"),
+    [rssNewsData, filterUnprocessedItems]
+  );
+  const pendingDentistry = useMemo(
+    () => filterUnprocessedItems(dentistryData, "dentistry"),
+    [dentistryData, filterUnprocessedItems]
+  );
+  const pendingRssDentistry = useMemo(
+    () => filterUnprocessedItems(rssDentistryData, "rssDentistry"),
+    [rssDentistryData, filterUnprocessedItems]
+  );
+
+  /** ===== Expose ===== */
   return {
-    // Data
+    // Raw data
     contentData,
     newsData,
-    journalsData,
+    rssNewsData,
     rssData,
+    dentistryData,
+    rssDentistryData,
     timelineData,
     approvedData,
     publishedData,
+
+    // Derived
+    pendingContent,
+    pendingNews,
+    pendingRss,
+    pendingRssNews,
+    pendingDentistry,
+    pendingRssDentistry,
+
     dashboardStats,
     trackingStats,
     buttonStates,
     setButtonStates,
-    
-    // Helper functions
+
+    // Helpers
     createItemKey,
     isItemProcessed,
     filterUnprocessedItems,
-    
-    // Action handlers
+
+    // Actions
     handleDeleteContent,
     handleContentApproval,
     handleContentRejection,
     handleNewsApproval,
     handleNewsRejection,
-    handleJournalApproval,
-    handleJournalRejection,
-    handleRssApproval,
-    handleRssRejection,
+    handleRssNewsApproval,
+    handleRssNewsRejection,
+    handleRssContentApproval,
+    handleRssContentRejection,
+    handleDentistryApproval,
+    handleDentistryRejection,
+    handleRssDentistryApproval,
+    handleRssDentistryRejection,
     handleUndo,
     getButtonState,
-    
-    // Data fetching
+
+    // Fetchers
     fetchAllData,
     fetchContentData,
     fetchNewsData,
-    fetchJournalsData,
+    fetchRssNewsData,
     fetchRssData,
+    fetchDentistryData,
+    fetchRssDentistryData,
     fetchTimelineData,
     isLoading,
   };

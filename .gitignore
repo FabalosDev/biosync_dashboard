@@ -1,16 +1,21 @@
-# Logs
-logs
-*.log
+# # Dependencies
+node_modules
+
+# Build outputs
+dist
+dist-ssr
+
+# Debug / temp logs (only tool-generated, not your own logs/)
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Local env/config files
 *.local
+.env
+.env.*.local
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +27,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Lockfiles (ignore across package managers)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
