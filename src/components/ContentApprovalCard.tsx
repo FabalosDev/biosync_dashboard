@@ -45,6 +45,86 @@ interface ContentApprovalCardProps {
 
 /* ---------- helpers ---------- */
 
+// accept http(s) or data:image; trim first
+const looksLikeUrl = (s?: string) =>
+  typeof s === "string" && /^(https?:\/\/|data:image\/)/i.test(s.trim());
+
+const norm = (v: any) => (typeof v === "string" ? v.trim() : "");
+const asUrl = (v: any) => {
+  const n = norm(v);
+  return n && looksLikeUrl(n) ? n : "";
+};
+
+/** try many possible keys; gracefully handle flags like "YES" */
+const pickImageUrl = (it: any): string => {
+  // most likely fields first
+  const candidates = [
+    it.regeneratedImage,
+    it.generatedImage,
+    it.finalImage,
+    it.final_image_url,
+    it.imageUrl,
+    it.image_url,
+    it.mediaUrl,
+    it.media_url,
+    it.primaryImage,
+    it.primary_image,
+    it.thumbnail,
+    it.Image,
+    it.AI_Image_URL,
+    it.photo,
+    it.picture,
+    it.image, // keep late; this is often noisy
+    it.imageGenerated, // sometimes a URL, sometimes "YES"
+    it.image_generated,
+  ];
+
+  for (const c of candidates) {
+    const url = asUrl(c);
+    if (url) return url;
+  }
+
+  // special case: sheet stores a boolean/flag like "YES"/true
+  const gen = String(
+    it.imageGenerated ?? it.image_generated ?? ""
+  ).toUpperCase();
+  if (gen === "YES" || gen === "TRUE") {
+    const fallback =
+      asUrl(it.finalImage) ||
+      asUrl(it.regeneratedImage) ||
+      asUrl(it.imageUrl) ||
+      asUrl(it.generatedImage);
+    if (fallback) return fallback;
+  }
+
+  return "";
+};
+
+const firstNonEmpty = (...vals: (string | undefined)[]) =>
+  vals.find((v) => typeof v === "string" && v.trim() !== "") ?? "";
+
+/** broaden caption detection */
+const pickCaption = (it: any) =>
+  firstNonEmpty(
+    it.caption,
+    it.caption_generated,
+    it.generatedCaption,
+    it.captionText,
+    it.aiCaption,
+    it.generated_caption,
+    it.Caption
+  );
+
+/** broaden headline detection */
+const pickHeadline = (it: any) =>
+  firstNonEmpty(
+    it.headline,
+    it.generatedHeadline,
+    it.headline_generated,
+    it.title, // sometimes this is the only field
+    it.articleTitle // news rows
+  );
+
 const statusToBadge = (status?: string) => {
   switch (status) {
     case "Pending":
@@ -56,27 +136,6 @@ const statusToBadge = (status?: string) => {
     default:
       return "bg-gray-500";
   }
-};
-
-const firstNonEmpty = (...vals: (string | undefined)[]) =>
-  vals.find((v) => typeof v === "string" && v.trim() !== "") ?? "";
-
-/** accept http(s) or data:image URLs only; ignore "YES"/"NO" etc. */
-const looksLikeUrl = (s?: string) =>
-  typeof s === "string" && /^(https?:\/\/|data:image\/)/i.test(s);
-
-/** try a bunch of possible image keys; return first URL-like */
-const pickImageUrl = (it: any) => {
-  const candidates = [
-    it.regeneratedImage,
-    it.generatedImage,
-    it.imageGenerated, // sometimes a URL, sometimes YES/NO
-    it.imageUrl,
-    it.image,
-    it.finalImage,
-    it.img,
-  ];
-  return candidates.find(looksLikeUrl) ?? "";
 };
 
 /* ---------- component ---------- */
@@ -112,7 +171,10 @@ export const ContentApprovalCard = ({
 
   // Robust derivations for image/caption/headline
   const imageUrl = useMemo(() => pickImageUrl(item), [item]);
+  const captionText = useMemo(() => pickCaption(item), [item]);
+  const headlineText = useMemo(() => pickHeadline(item), [item]);
 
+  /*
   const captionText = useMemo(
     () =>
       firstNonEmpty(
@@ -128,7 +190,7 @@ export const ContentApprovalCard = ({
   const headlineText = useMemo(
     () => firstNonEmpty(item.headline, item.generatedHeadline, item.title),
     [item]
-  );
+  ); */
 
   useEffect(() => {
     // Dev aid: if you expected an image but didn't get one, log keys once

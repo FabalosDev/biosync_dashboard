@@ -43,7 +43,7 @@ export interface NewsRow {
   id: string;
   rowNumber: number;
   actualArrayIndex: number;
-  headline: string;
+  articleTitle: string;
   caption: string;
   articleAuthors: string;
   source: string;
@@ -60,7 +60,7 @@ export interface NewsRow {
   category: string;
   truthScore: string;
   dup: string;
-  columnHStatus?: string; // optional if you want News to rely on H as well
+  //  columnHStatus?: string; // optional if you want News to rely on H as well
 }
 
 // News RSS
@@ -391,6 +391,8 @@ export const useContentManagement = () => {
     }
   }, [CONTENT_SHEET_URL]);
 
+  // src/hooks/useContentManagement.tsx
+
   const fetchNewsData = useCallback(async () => {
     try {
       const res = await fetch(NEWS_SHEET_URL);
@@ -398,55 +400,55 @@ export const useContentManagement = () => {
       const json = parseGViz(txt);
       const totalRows = json.table?.rows?.length ?? 0;
 
-      const all = (json.table?.rows ?? []).map((row, idx): NewsRow => {
-        const c = row.c ?? [];
-        const actualRowNumber = totalRows - idx + 1;
+      const all = (json.table?.rows ?? [])
+        .map((row, idx): NewsRow | null => {
+          const c = row.c ?? [];
+          const actualRowNumber = totalRows - idx + 1; // ✅ Get status from the "Approval" column (J, index 9)
 
-        // existing approval (often YES/NO or empty)
-        const approval = String(c[9]?.v ?? "").trim();
+          const approval = String(c[9]?.v ?? "").trim(); // ✅ Derive status: If "Approval" isn't exactly YES or NO, it's Pending.
 
-        // ✅ NEW: read Column H (index 7) as the control cell (Pending Approval)
-        const hCell = (c[7] ?? {}) as { v?: unknown; f?: unknown };
-        const columnHStatus = normalizePublishCell(
-          (hCell as any).f ?? (hCell as any).v ?? ""
-        );
+          const status: NewsRow["status"] =
+            approval.toUpperCase() === "YES"
+              ? "Approved"
+              : approval.toUpperCase() === "NO"
+              ? "Rejected"
+              : "Pending"; // ✅ FIXED: Get headline from its actual column.
 
-        // keep your original status derivation (YES/NO → Approved/Rejected, else Pending)
-        const status: NewsRow["status"] =
-          approval === "YES"
-            ? "Approved"
-            : approval === "NO"
-            ? "Rejected"
-            : "Pending";
+          // NOTE: I'm assuming the headline is in Column A (index 0).
+          // Please change `c[0]` if your headline is in a different column.
+          const articleTitle = String(c[0]?.v ?? "");
+          const caption = String(c[8]?.v ?? "");
 
-        return {
-          id: `news-${idx}`,
-          rowNumber: actualRowNumber,
-          actualArrayIndex: idx,
-          headline: String(c[7]?.v ?? ""),
-          caption: String(c[8]?.v ?? ""),
-          articleAuthors: String(c[3]?.v ?? ""),
-          source: String(c[11]?.v ?? ""),
-          link: String(c[1]?.v ?? ""),
-          pubDate: String(c[2]?.v ?? ""),
-          creator: String(c[3]?.v ?? ""),
-          status, // keep
-          timestamp: Date.now() - idx * 1000,
-          sheet: "HEALTH NEWS USA- THUMBNAILS",
-          imageGenerated: String(c[6]?.v ?? ""),
-          approval, // keep
-          keywords: String(c[18]?.v ?? ""),
-          priority: String(c[19]?.v ?? ""),
-          category: String(c[20]?.v ?? ""),
-          truthScore: String(c[21]?.v ?? ""),
-          dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
+          // Skips empty header/footer rows
+          if (!articleTitle && !caption) {
+            return null;
+          }
 
-          // ✅ add this:
-          columnHStatus,
-        } as any as NewsRow;
-      });
+          return {
+            id: `news-${idx}`,
+            rowNumber: actualRowNumber,
+            actualArrayIndex: idx,
+            articleTitle, // CORRECTED
+            caption,
+            articleAuthors: String(c[3]?.v ?? ""),
+            source: String(c[11]?.v ?? ""),
+            link: String(c[1]?.v ?? ""),
+            pubDate: String(c[2]?.v ?? ""),
+            creator: String(c[3]?.v ?? ""),
+            status, // CORRECTED
+            timestamp: Date.now() - idx * 1000,
+            sheet: "HEALTH NEWS USA- THUMBNAILS",
+            imageGenerated: String(c[6]?.v ?? ""),
+            approval, // Keep raw value for reference
+            keywords: String(c[18]?.v ?? ""),
+            priority: String(c[19]?.v ?? ""),
+            category: String(c[20]?.v ?? ""),
+            truthScore: String(c[21]?.v ?? ""),
+            dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
+          };
+        })
+        .filter((r): r is NewsRow => r !== null); // Removes any empty rows
 
-      // Optional: if your “pending” items are older than last 100, remove the slice.
       setNewsData(all.slice(-100).reverse());
     } catch (e) {
       console.error("Error fetching news:", e);
@@ -734,9 +736,13 @@ export const useContentManagement = () => {
   }, []);
 
   /** ===== Filtering (unified & shared) ===== */
+  // src/hooks/useContentManagement.tsx
+
   const filterUnprocessedItems = useCallback(
-    /* ... */ (data, contentType) => {
+    (data: any[], contentType: string) => {
+      // Added types for clarity
       return data.filter((item) => {
+        // This part remains the same
         if (
           isItemProcessed({
             sheet: item.sheet,
@@ -744,17 +750,16 @@ export const useContentManagement = () => {
             rowNumber: item.rowNumber,
           })
         )
-          return false;
+          return false; // This part remains the same
 
         if (contentType === "content" || contentType === "dentistry") {
           return isPendingApproval((item as any).columnHStatus);
-        }
+        } // ✅ FIXED: Use the correct status logic for news.
 
         if (contentType === "news") {
-          return isPendingApproval((item as any).columnHStatus); // if you moved News to use Column H too
-        }
+          return (item as NewsRow).status === "Pending";
+        } // This part for RSS remains the same
 
-        // ✅ ALL RSS must be exactly RSS_Success in Column S
         if (
           contentType === "rss" ||
           contentType === "rssNews" ||
@@ -766,8 +771,9 @@ export const useContentManagement = () => {
         return false;
       });
     },
-    [isItemProcessed]
+    [isItemProcessed, isPendingApproval, isRssSuccess] // Updated dependencies
   );
+
   /** ===== Stats ===== */
   const updateDashboardStats = useCallback(() => {
     let totalCount = 0;
