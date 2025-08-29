@@ -1,5 +1,4 @@
-
-class WebhookService {
+/* class WebhookService {
   private requestQueue = new Map<string, Promise<any>>();
   private retryAttempts = 3;
   private retryDelay = 1000; // 1 second
@@ -18,7 +17,7 @@ class WebhookService {
     console.log('📦 Request Body:', JSON.stringify(requestBody, null, 2));
 
     const startTime = Date.now();
-    
+
     for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
       try {
         const controller = new AbortController();
@@ -37,10 +36,10 @@ class WebhookService {
 
         const endTime = Date.now();
         const responseTime = endTime - startTime;
-        
+
         console.log('⏱️ Response Time:', responseTime + 'ms');
         console.log('📈 Response Status:', response.status);
-        
+
         let responseData;
         try {
           responseData = await response.text();
@@ -58,11 +57,11 @@ class WebhookService {
 
       } catch (error) {
         console.error(`❌ ${operation.toUpperCase()} REQUEST - Attempt ${attempt} failed:`, error);
-        
+
         if (attempt === this.retryAttempts) {
           throw error;
         }
-        
+
         // Exponential backoff
         const delayTime = this.retryDelay * Math.pow(2, attempt - 1);
         console.log(`⏳ Retrying in ${delayTime}ms...`);
@@ -73,7 +72,7 @@ class WebhookService {
 
   async sendWebhookRequest(url: string, requestBody: any, operation: string): Promise<any> {
     const requestKey = this.generateRequestKey(url, requestBody);
-    
+
     // If the same request is already in progress, wait for it
     if (this.requestQueue.has(requestKey)) {
       console.log(`⏸️ ${operation.toUpperCase()} - Request already in progress, waiting...`);
@@ -142,3 +141,63 @@ class WebhookService {
 }
 
 export const webhookService = new WebhookService();
+*/
+
+// src/lib/WebhookService.ts
+type ActionType = "submit" | "approve" | "reject";
+type ContentType =
+  | "content"
+  | "news"
+  | "rss"
+  | "rssNews"
+  | "rssDentistry"
+  | "dentistry";
+
+const WEBHOOK_URL =
+  "https://biohackyourself.app.n8n.cloud/webhook/content-action";
+
+class WebhookService {
+  private retryAttempts = 3;
+  private retryDelay = 1000; // ms
+
+  private delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  async send(
+    action: ActionType,
+    contentType: ContentType,
+    payload: Record<string, any>
+  ) {
+    const body = {
+      action,
+      contentType,
+      ...payload, // rowNumber, sheet, id, title, caption, etc.
+    };
+
+    for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
+        const res = await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        const text = await res.text().catch(() => "");
+        if (!res.ok)
+          throw new Error(`HTTP ${res.status}: ${text || res.statusText}`);
+
+        return { success: true, data: text };
+      } catch (err) {
+        if (attempt === this.retryAttempts) throw err;
+        await this.delay(this.retryDelay * Math.pow(2, attempt - 1));
+      }
+    }
+  }
+}
+
+export const webhook = new WebhookService();

@@ -1,4 +1,5 @@
-import { useState } from "react";
+// src/components/ContentApprovalCard.tsx
+import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,11 +15,12 @@ import { RejectionDialog } from "./RejectionDialog";
 import { useToast } from "@/hooks/use-toast";
 import { webhookService } from "@/services/webhookService";
 
+/** Keep your existing union so the rest of the app compiles */
 type ContentType =
   | "content"
   | "regenerated"
   | "news"
-  | "rssNews" // renamed from journals
+  | "rssNews"
   | "rss"
   | "dentistry"
   | "rssDentistry";
@@ -41,6 +43,116 @@ interface ContentApprovalCardProps {
   showDeleteButton?: boolean;
 }
 
+const statusToBadge = (status?: string) => {
+  switch (status) {
+    case "Pending":
+      return "bg-yellow-500";
+    case "Approved":
+      return "bg-green-500";
+    case "Rejected":
+      return "bg-red-500";
+    default:
+      return "bg-gray-500";
+  }
+};
+
+const firstNonEmpty = (...vals: (string | undefined)[]) =>
+  vals.find((v) => typeof v === "string" && v.trim() !== "") ?? "";
+
+/** Build approve payload by content type */
+function buildApproveBody(contentType: ContentType, item: any) {
+  const body: Record<string, any> = {
+    sheet: item.sheet,
+    row: item.rowNumber || item.row,
+    status: "YES",
+  };
+
+  // shared
+  if (item.caption) body.caption = item.caption;
+  const title = firstNonEmpty(item.title, item.articleTitle, item.headline);
+
+  switch (contentType) {
+    case "content":
+    case "regenerated":
+      // keep default sheet as item.sheet
+      break;
+    case "news":
+      body.title = title;
+      // sheet: from item.sheet ("HEALTH NEWS USA- THUMBNAILS")
+      break;
+    case "rssNews":
+      body.title = title;
+      body.sheet = "HNN RSS";
+      break;
+    case "rss":
+      body.title = title;
+      body.sheet = "Thumbnail System";
+      break;
+    case "dentistry":
+      body.title = title;
+      body.sheet = "DENTAL";
+      break;
+    case "rssDentistry":
+      body.title = title;
+      body.sheet = "Dental RSS";
+      break;
+  }
+
+  return body;
+}
+
+/** Build reject payload by content type */
+function buildRejectBody(
+  contentType: ContentType,
+  item: any,
+  extra?: {
+    feedback?: string;
+    imageQuery?: string;
+    headlineImprovements?: string;
+    captionImprovements?: string;
+  }
+) {
+  const body: Record<string, any> = {
+    sheet: item.sheet,
+    row: item.rowNumber || item.row,
+    status: "NO",
+  };
+
+  const title = firstNonEmpty(item.title, item.articleTitle, item.headline);
+  if (item.caption) body.caption = item.caption;
+
+  if (contentType === "content" || contentType === "regenerated") {
+    body.feedback = extra?.feedback ?? "";
+    body.image_query = extra?.imageQuery ?? "";
+    body.headline_improvements = extra?.headlineImprovements ?? "";
+    body.caption_improvements = extra?.captionImprovements ?? "";
+  }
+
+  switch (contentType) {
+    case "news":
+      body.title = title;
+      break;
+    case "rssNews":
+      body.title = title;
+      body.sheet = "HNN RSS";
+      break;
+    case "rss":
+      body.title = title;
+      body.sheet = "Thumbnail System";
+      break;
+    case "dentistry":
+      body.title = title;
+      body.sheet = "DENTAL";
+      break;
+    case "rssDentistry":
+      body.title = title;
+      body.sheet = "Dental RSS";
+      break;
+  }
+
+  return body;
+}
+
 export const ContentApprovalCard = ({
   item,
   onApprove,
@@ -58,56 +170,40 @@ export const ContentApprovalCard = ({
   const [isExpanded, setIsExpanded] = useState(false);
   const { toast } = useToast();
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "Pending":
-        return "bg-yellow-500";
-      case "Approved":
-        return "bg-green-500";
-      case "Rejected":
-        return "bg-red-500";
-      default:
-        return "bg-gray-500";
+  const link = useMemo(
+    () =>
+      firstNonEmpty(
+        item.link,
+        item.articleLink,
+        item.url,
+        item.sourceLink,
+        item.source
+      ),
+    [item]
+  );
+
+  const actionMessage = useMemo(() => {
+    if (buttonState === "approved") {
+      return contentType === "content" || contentType === "regenerated"
+        ? "Approved and sent for scheduling"
+        : "Sent for production";
     }
-  };
+    if (buttonState === "rejected") {
+      return contentType === "content" || contentType === "regenerated"
+        ? "Sent for regeneration"
+        : "Rejected, not sent for production";
+    }
+    return null;
+  }, [buttonState, contentType]);
 
   const handleApprove = async () => {
     if (isApproving) return;
     setIsApproving(true);
-
     try {
-      const webhookUrls = webhookService.getWebhookUrls(contentType);
-      const requestBody: any = {
-        sheet: item.sheet,
-        row: item.rowNumber || item.row,
-        status: "YES",
-      };
+      const { approve } = webhookService.getWebhookUrls(contentType);
+      const body = buildApproveBody(contentType, item);
 
-      // APPROVE payload tweaks by type
-      if (contentType === "content" || contentType === "regenerated") {
-        if (item.caption) requestBody.caption = item.caption;
-      } else if (contentType === "news") {
-        requestBody.title = item.title || "";
-        // sheet stays as item.sheet ("HEALTH NEWS USA- THUMBNAILS")
-      } else if (contentType === "rssNews") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "HNN RSS";
-      } else if (contentType === "rss") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "Thumbnail System";
-      } else if (contentType === "dentistry") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "DENTAL";
-      } else if (contentType === "rssDentistry") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "Dental RSS";
-      }
-
-      await webhookService.sendWebhookRequest(
-        webhookUrls.approve,
-        requestBody,
-        "approve"
-      );
+      await webhookService.sendWebhookRequest(approve, body, "approve");
 
       toast({
         title: "Content Approved",
@@ -142,41 +238,15 @@ export const ContentApprovalCard = ({
     setIsRejecting(true);
 
     try {
-      const webhookUrls = webhookService.getWebhookUrls(contentType);
-      const requestBody: any = {
-        sheet: item.sheet,
-        row: item.rowNumber || item.row,
-        status: "NO",
-      };
+      const { reject } = webhookService.getWebhookUrls(contentType);
+      const body = buildRejectBody(contentType, item, {
+        feedback,
+        imageQuery,
+        headlineImprovements,
+        captionImprovements,
+      });
 
-      // REJECT payload tweaks by type
-      if (contentType === "content" || contentType === "regenerated") {
-        requestBody.feedback = feedback || "";
-        requestBody.image_query = imageQuery || "";
-        requestBody.headline_improvements = headlineImprovements || "";
-        requestBody.caption_improvements = captionImprovements || "";
-        if (item.caption) requestBody.caption = item.caption;
-      } else if (contentType === "news") {
-        requestBody.title = item.title || "";
-      } else if (contentType === "rssNews") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "HNN RSS";
-      } else if (contentType === "rss") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "Thumbnail System";
-      } else if (contentType === "dentistry") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "DENTAL";
-      } else if (contentType === "rssDentistry") {
-        requestBody.title = item.title || "";
-        requestBody.sheet = "Dental RSS";
-      }
-
-      await webhookService.sendWebhookRequest(
-        webhookUrls.reject,
-        requestBody,
-        "reject"
-      );
+      await webhookService.sendWebhookRequest(reject, body, "reject");
 
       toast({
         title: "Content Rejected",
@@ -211,25 +281,12 @@ export const ContentApprovalCard = ({
     if (contentType === "content" || contentType === "regenerated") {
       setRejectionDialogOpen(true);
     } else {
+      // non-content types can reject immediately
       handleReject();
     }
   };
 
-  const getActionStatusMessage = () => {
-    if (buttonState === "approved") {
-      return contentType === "content" || contentType === "regenerated"
-        ? "Approved and sent for scheduling"
-        : "Sent for production";
-    }
-    if (buttonState === "rejected") {
-      return contentType === "content" || contentType === "regenerated"
-        ? "Sent for regeneration"
-        : "Rejected, not sent for production";
-    }
-    return null;
-  };
-
-  // Minimized card for rejected items (non-content types)
+  /** MINIMAL REJECTED CARD for non-content types */
   if (
     buttonState === "rejected" &&
     contentType !== "content" &&
@@ -251,19 +308,21 @@ export const ContentApprovalCard = ({
               )}
             </div>
             <div className="flex items-center gap-2">
+              {onUndo && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-blue-600 hover:bg-blue-50"
+                  onClick={() => onUndo(item)}
+                >
+                  <RotateCcw className="h-4 w-4 mr-1" />
+                  Undo
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-blue-600 hover:bg-blue-50"
-                onClick={() => onUndo && onUndo(item)}
-              >
-                <RotateCcw className="h-4 w-4 mr-1" />
-                Undo
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsExpanded(!isExpanded)}
+                onClick={() => setIsExpanded((v) => !v)}
                 className="text-gray-600"
               >
                 {isExpanded ? (
@@ -274,10 +333,15 @@ export const ContentApprovalCard = ({
               </Button>
             </div>
           </div>
+
           {!isExpanded && (
             <div className="mt-2">
               <p className="text-sm text-gray-700 truncate">
-                {item.title || item.articleTitle || "Rejected content"}
+                {firstNonEmpty(
+                  item.title,
+                  item.articleTitle,
+                  "Rejected content"
+                )}
               </p>
             </div>
           )}
@@ -286,13 +350,13 @@ export const ContentApprovalCard = ({
         {isExpanded && (
           <CardContent>
             <div className="space-y-4">
-              {(item.title || item.articleTitle) && (
+              {firstNonEmpty(item.title, item.articleTitle) && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
                     TITLE
                   </Label>
                   <p className="text-lg font-semibold mt-1 leading-tight">
-                    {item.title || item.articleTitle}
+                    {firstNonEmpty(item.title, item.articleTitle)}
                   </p>
                 </div>
               )}
@@ -314,7 +378,7 @@ export const ContentApprovalCard = ({
                     ARTICLE TEXT
                   </Label>
                   <p className="text-sm mt-1 leading-relaxed">
-                    {item.articleText.substring(0, 300)}...
+                    {String(item.articleText).substring(0, 300)}…
                   </p>
                 </div>
               )}
@@ -347,11 +411,10 @@ export const ContentApprovalCard = ({
     <>
       <Card className="hover:shadow-lg transition-shadow duration-300">
         <CardHeader>
-          {/* Top header with status + badges */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Badge className={`${getStatusColor(item.status)} text-white`}>
-                {item.status}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge className={`${statusToBadge(item.status)} text-white`}>
+                {item.status ?? "Unknown"}
               </Badge>
 
               {(item.rowNumber || item.row) && (
@@ -372,11 +435,12 @@ export const ContentApprovalCard = ({
                 </span>
               )}
 
-              {item.inputText && item.inputText.includes("https://") && (
-                <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
-                  Link Generated
-                </span>
-              )}
+              {item.inputText &&
+                String(item.inputText).includes("https://") && (
+                  <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
+                    Link Generated
+                  </span>
+                )}
 
               {item.priority && (
                 <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
@@ -392,7 +456,7 @@ export const ContentApprovalCard = ({
                     if (!isNaN(num)) {
                       return `${Math.round(num <= 1 ? num * 100 : num)}%`;
                     }
-                    return item.truthScore;
+                    return String(item.truthScore);
                   })()}
                 </span>
               )}
@@ -425,7 +489,7 @@ export const ContentApprovalCard = ({
         </CardHeader>
 
         <CardContent>
-          {/* Image + Caption */}
+          {/* Image + text layout */}
           {(item.imageGenerated || item.regeneratedImage) && (
             <div className="flex flex-col md:flex-row gap-4 mb-6">
               <div className="md:w-2/5 flex-shrink-0">
@@ -461,7 +525,7 @@ export const ContentApprovalCard = ({
                       <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans break-words">
                         {item.headline}
                       </pre>
-                      <br></br>
+                      <br />
                     </div>
                   </div>
                 )}
@@ -484,18 +548,11 @@ export const ContentApprovalCard = ({
             </div>
           )}
 
-          {/* Article link */}
-          {item.link && (
+          {/* Link */}
+          {link && (
             <div className="mt-4">
-              <Label className="text-xs font-medium text-muted-foreground"></Label>
               <a
-                href={
-                  item.link ||
-                  item.articleLink ||
-                  item.url ||
-                  item.sourceLink ||
-                  item.source
-                }
+                href={link}
                 target="_blank"
                 rel="noreferrer"
                 className="text-sm text-blue-600 underline"
@@ -505,19 +562,20 @@ export const ContentApprovalCard = ({
             </div>
           )}
 
-          {/* Legacy layout (title, snippet, etc.) */}
+          {/* Legacy layout */}
           {!(item.imageGenerated || item.regeneratedImage) && (
             <div className="space-y-4">
-              {(item.title || item.articleTitle) && (
+              {firstNonEmpty(item.title, item.articleTitle) && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
                     TITLE
                   </Label>
                   <p className="text-lg font-semibold mt-1 leading-tight">
-                    {item.title || item.articleTitle}
+                    {firstNonEmpty(item.title, item.articleTitle)}
                   </p>
                 </div>
               )}
+
               {item.contentSnippet && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
@@ -528,24 +586,18 @@ export const ContentApprovalCard = ({
                   </p>
                 </div>
               )}
+
               {item.articleText && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
                     ARTICLE TEXT
                   </Label>
                   <p className="text-sm mt-1 leading-relaxed">
-                    {item.articleText.substring(0, 300)}...
+                    {String(item.articleText).substring(0, 300)}…
                   </p>
                 </div>
               )}
-              {item.articleAuthors && (
-                <div>
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    AUTHORS
-                  </Label>
-                  <p className="text-sm mt-1">{item.articleAuthors}</p>
-                </div>
-              )}
+
               {item.source && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
@@ -554,12 +606,15 @@ export const ContentApprovalCard = ({
                   <p className="text-sm mt-1">{item.source}</p>
                 </div>
               )}
-              {(item.pubDate || item.pubdate) && (
+
+              {firstNonEmpty(item.pubDate, item.pubdate) && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
-                    PUBLICATION:
+                    PUBLICATION
                   </Label>
-                  <p className="text-sm mt-1">{item.pubDate || item.pubdate}</p>
+                  <p className="text-sm mt-1">
+                    {firstNonEmpty(item.pubDate, item.pubdate)}
+                  </p>
                 </div>
               )}
             </div>
@@ -578,11 +633,16 @@ export const ContentApprovalCard = ({
                 <CheckCircle className="h-4 w-4 mr-1" />
                 {isApproving ? "Approving..." : "Approve"}
               </Button>
+
               <Button
                 size="sm"
                 variant="outline"
                 className="text-red-600 border-red-600 hover:bg-red-50 flex-1"
-                onClick={openRejectionDialog}
+                onClick={() =>
+                  contentType === "content" || contentType === "regenerated"
+                    ? setRejectionDialogOpen(true)
+                    : handleReject()
+                }
                 disabled={isRejecting || isApproving}
               >
                 <XCircle className="h-4 w-4 mr-1" />
@@ -591,32 +651,31 @@ export const ContentApprovalCard = ({
             </div>
           )}
 
-          {/* Undo state */}
-          {buttonState && (
+          {/* Undo / status note */}
+          {buttonState && actionMessage && (
             <div className="mt-4 p-3 rounded-md bg-gray-100">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium text-gray-700">
-                  {getActionStatusMessage()}
+                  {actionMessage}
                 </p>
-                <div className="flex items-center gap-2">
-                  {onUndo && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-blue-600 hover:bg-blue-50"
-                      onClick={() => onUndo(item)}
-                    >
-                      <RotateCcw className="h-4 w-4 mr-1" />
-                      Undo
-                    </Button>
-                  )}
-                </div>
+                {onUndo && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-blue-600 hover:bg-blue-50"
+                    onClick={() => onUndo(item)}
+                  >
+                    <RotateCcw className="h-4 w-4 mr-1" />
+                    Undo
+                  </Button>
+                )}
               </div>
             </div>
           )}
         </CardContent>
       </Card>
 
+      {/* Content/regenerated only */}
       <RejectionDialog
         isOpen={rejectionDialogOpen}
         onClose={() => setRejectionDialogOpen(false)}
