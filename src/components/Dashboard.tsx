@@ -677,7 +677,7 @@ const IndexPage = () => {
                 </CardDescription>
               </CardHeader>
             </Card>
-            // Dashboard.tsx
+
             <div className="grid gap-6">
               {/* Check the LENGTH of the FILTERED array */}
               {filterUnprocessedItems(dentistryData, "dentistry").length ===
