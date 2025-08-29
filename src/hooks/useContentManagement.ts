@@ -398,13 +398,13 @@ export const useContentManagement = () => {
       const res = await fetch(NEWS_SHEET_URL);
       const txt = await res.text();
       const json = parseGViz(txt);
-      const totalRows = json.table?.rows?.length ?? 0;
+      //  const totalRows = json.table?.rows?.length ?? 0;
 
       const all = (json.table?.rows ?? [])
         .map((row, idx): NewsRow | null => {
           const c = row.c ?? [];
-          const actualRowNumber = totalRows - idx + 1; // ✅ Get status from the "Approval" column (J, index 9)
-
+          //      const actualRowNumber = totalRows - idx + 1; // ✅ Get status from the "Approval" column (J, index 9)
+          const sheetRowNumber = idx + 2; // top row = 1, plus header
           const approval = String(c[9]?.v ?? "").trim(); // ✅ Derive status: If "Approval" isn't exactly YES or NO, it's Pending.
 
           const status: NewsRow["status"] =
@@ -426,7 +426,7 @@ export const useContentManagement = () => {
 
           return {
             id: `news-${idx}`,
-            rowNumber: actualRowNumber,
+            rowNumber: sheetRowNumber,
             actualArrayIndex: idx,
             articleTitle, // CORRECTED
             caption,
@@ -461,12 +461,12 @@ export const useContentManagement = () => {
       const res = await fetch(RSS_NEWS_SHEET_URL);
       const txt = await res.text();
       const json = parseGViz(txt);
-      const totalRows = json.table?.rows?.length ?? 0;
+      //  const totalRows = json.table?.rows?.length ?? 0;
 
       const all = (json.table?.rows ?? []).map((row, idx): RssNewsRow => {
         const c = row.c ?? [];
-        const actualRowNumber = totalRows - idx + 1;
-
+        //  const actualRowNumber = totalRows - idx + 1;
+        const sheetRowNumber = idx + 2;
         const title = cellVal(c, 9);
         const contentSnippet = cellVal(c, 11);
         const link = cellVal(c, 5);
@@ -487,7 +487,7 @@ export const useContentManagement = () => {
 
         return {
           id: `hnn-${idx}`,
-          rowNumber: actualRowNumber,
+          rowNumber: sheetRowNumber,
           actualArrayIndex: idx,
 
           title,
@@ -526,11 +526,12 @@ export const useContentManagement = () => {
       const res = await fetch(RSS_SHEET_URL);
       const txt = await res.text();
       const json = parseGViz(txt);
-      const totalRows = json.table?.rows?.length ?? 0;
+      //  const totalRows = json.table?.rows?.length ?? 0;
 
       const all = (json.table?.rows ?? []).map((row, idx): RssRow => {
+        const sheetRowNumber = idx + 2;
         const c = row.c ?? [];
-        const actualRowNumber = totalRows - idx + 1;
+        //  const actualRowNumber = totalRows - idx + 1;
 
         // Column S (index 18) is the Status written by n8n: RSS_Success, drafted, approved, posted, rejected
         const stateRaw = cellVal(c, 18);
@@ -545,7 +546,7 @@ export const useContentManagement = () => {
 
         return {
           id: `rss-${idx}`,
-          rowNumber: actualRowNumber,
+          rowNumber: sheetRowNumber,
           actualArrayIndex: idx,
           title: cellVal(c, 9),
           contentSnippet: cellVal(c, 11),
@@ -597,7 +598,7 @@ export const useContentManagement = () => {
       const mapped = rows
         .map((row, idx): DentistryRow | null => {
           const c = row.c ?? [];
-          const rowNumber = idx + 2;
+          const rowNumber = idx + 2; // ✅ UNIFIED rule (same as content/news)
 
           const headline = val(c, 20);
           const caption = val(c, 2);
@@ -625,7 +626,7 @@ export const useContentManagement = () => {
               ? "Rejected"
               : "Pending";
 
-          // drop rows that are truly empty (avoid header junk)
+          // drop empty rows
           if (
             [
               headline,
@@ -643,7 +644,7 @@ export const useContentManagement = () => {
 
           return {
             id: `dent-${idx}`,
-            rowNumber,
+            rowNumber, // ✅ send correct row to webhook
             actualArrayIndex: idx,
             headline,
             caption,
@@ -681,18 +682,19 @@ export const useContentManagement = () => {
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const totalRows = json.table?.rows?.length ?? 0;
+      //  const totalRows = json.table?.rows?.length ?? 0;
 
       const all = (json.table?.rows ?? []).map((row, idx): RssDentistryRow => {
         const c = row.c ?? [];
-        const actualRowNumber = totalRows - idx + 1;
+        //  const actualRowNumber = totalRows - idx + 1;
+        const sheetRowNumber = idx + 2;
 
         // ✅ Column S (index 18) carries the pipeline status: RSS_Success, drafted, approved, posted, rejected
         const stateRaw = getRssStatus(c); // cellVal(c, 18) wrapped + logs if empty
 
         return {
           id: `rss-dent-${idx}`,
-          rowNumber: actualRowNumber,
+          rowNumber: sheetRowNumber,
           actualArrayIndex: idx,
           title: cellVal(c, 9),
           contentSnippet: cellVal(c, 11),
