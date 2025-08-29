@@ -144,8 +144,9 @@ export const webhookService = new WebhookService();
 */
 
 // Unified webhook service: everything goes to /webhook/content-action
-type ActionType = "submit" | "approve" | "reject";
-type ContentType =
+// src/services/webhookService.ts
+export type ActionType = "submit" | "approve" | "reject";
+export type ContentType =
   | "content"
   | "news"
   | "rss"
@@ -153,125 +154,43 @@ type ContentType =
   | "rssDentistry"
   | "dentistry";
 
-class WebhookService {
-  private endpoint =
-    "https://biohackyourself.app.n8n.cloud/webhook/content-action";
+const WEBHOOK_URL =
+  "https://biohackyourself.app.n8n.cloud/webhook/content-action";
 
-  private requestQueue = new Map<string, Promise<any>>();
-  private retryAttempts = 3;
-  private retryDelay = 1000; // ms
+type BasePayload = {
+  action: ActionType;
+  contentType: ContentType;
+  sheet: string;
+  row: number;
+  title?: string;
+  caption?: string;
+};
 
-  // ---------- utils ----------
-  private delay(ms: number) {
-    return new Promise((r) => setTimeout(r, ms));
+type RejectExtras = {
+  feedback?: string;
+  image_query?: string;
+  headline_improvements?: string;
+  caption_improvements?: string;
+};
+
+export async function postWebhook(
+  body: BasePayload & Partial<RejectExtras>
+): Promise<any> {
+  const res = await fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const text = await res.text(); // n8n might return text or json
+  if (!res.ok) {
+    // include response text for easier debugging
+    throw new Error(`Webhook ${res.status} ${res.statusText}: ${text}`);
   }
 
-  private requestKey(url: string, body: unknown) {
-    return `${url}_${JSON.stringify(body)}`;
-  }
-
-  // ---------- core POST with retry, timeout, logging ----------
-  private async post(url: string, body: unknown, label: string) {
-    const started = Date.now();
-    console.log(`🚀 ${label.toUpperCase()} → ${url}`);
-    console.log("📦 Payload:", JSON.stringify(body, null, 2));
-
-    for (let attempt = 1; attempt <= this.retryAttempts; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
-
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
-
-        const txt = await res.text().catch(() => "");
-        console.log("⏱️ Duration:", Date.now() - started, "ms");
-        console.log("📈 Status:", res.status);
-        if (txt) console.log("📄 Response:", txt);
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        console.log(`✅ ${label.toUpperCase()} OK`);
-        return { ok: true, status: res.status, data: txt };
-      } catch (err) {
-        console.error(
-          `❌ ${label.toUpperCase()} attempt ${attempt} failed:`,
-          err
-        );
-        if (attempt === this.retryAttempts) throw err;
-
-        const backoff = this.retryDelay * Math.pow(2, attempt - 1);
-        console.log(`⏳ retrying in ${backoff}ms…`);
-        await this.delay(backoff);
-      }
-    }
-  }
-
-  // ---------- public: single unified call ----------
-  /**
-   * Send a unified action to the single n8n endpoint.
-   * Required fields:
-   * - action: "submit" | "approve" | "reject"
-   * - contentType: "content" | "news" | "rss" | "rssNews" | "rssDentistry" | "dentistry"
-   * - anything else your flow needs (sheet, row, title, caption, etc.)
-   */
-  async sendAction(
-    action: ActionType,
-    contentType: ContentType,
-    payload: Record<string, any> = {}
-  ) {
-    const body = { action, contentType, ...payload };
-    const key = this.requestKey(this.endpoint, body);
-
-    if (this.requestQueue.has(key)) {
-      console.log("⏸️ duplicate request in flight — waiting…");
-      return this.requestQueue.get(key)!;
-    }
-
-    const p = this.post(
-      this.endpoint,
-      body,
-      `${contentType}:${action}`
-    ).finally(() => this.requestQueue.delete(key));
-    this.requestQueue.set(key, p);
-    return p;
-  }
-
-  // ---------- compatibility shims (optional) ----------
-  /**
-   * Old code calls getWebhookUrls(contentType). We return the same endpoint
-   * for both approve/reject so nothing else breaks.
-   */
-  getWebhookUrls(_contentType: ContentType) {
-    return { approve: this.endpoint, reject: this.endpoint };
-  }
-
-  /**
-   * Old code calls sendWebhookRequest(url, body, operation).
-   * We just route to the unified endpoint and ignore the passed url.
-   */
-  async sendWebhookRequest(
-    _url: string,
-    body: Record<string, any>,
-    operation: string
-  ) {
-    const action =
-      (body.action as ActionType) ||
-      (operation === "approve"
-        ? "approve"
-        : operation === "reject"
-        ? "reject"
-        : "submit");
-    const contentType = (body.contentType || "content") as ContentType;
-
-    return this.sendAction(action, contentType, body);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text; // if it wasn't JSON, return raw text
   }
 }
-
-export const webhookService = new WebhookService();
-export type { ActionType, ContentType };
