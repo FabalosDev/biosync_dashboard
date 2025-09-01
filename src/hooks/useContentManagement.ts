@@ -409,53 +409,40 @@ export const useContentManagement = () => {
   }, [CONTENT_SHEET_URL]);
 
   const fetchNewsData = useCallback(async () => {
-    // Helpers kept local to this function; move them out if you reuse elsewhere.
-    const clean = (x: unknown) =>
-      (x ?? "")
-        .toString()
-        .toLowerCase()
-        .normalize("NFKD")
-        .replace(/[^a-z]/g, ""); // strip spaces, emojis, punctuation, accents
-
-    const toStatus = (raw: unknown): NewsRow["status"] => {
-      const s = clean(raw);
-      if (
-        [
-          "approved",
-          "posted",
-          "publish",
-          "published",
-          "live",
-          "scheduled",
-        ].some((k) => s.includes(k))
-      ) {
-        return "Approved";
-      }
-      if (["rejected", "reject", "declined"].some((k) => s.includes(k))) {
-        return "Rejected";
-      }
-      return "Pending";
-    };
-
     try {
-      // Kill caching on GViz responses
-      const url = `${NEWS_SHEET_URL}${
-        NEWS_SHEET_URL.includes("?") ? "&" : "?"
-      }_cb=${Date.now()}`;
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status} fetching sheet`);
-
+      const res = await fetch(NEWS_SHEET_URL);
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const rows = Array.isArray(json.table?.rows) ? json.table.rows : [];
+      // helper to normalize many spellings into 3 buckets
+      const stageOf = (raw: unknown) => {
+        const s = String(raw ?? "")
+          .trim()
+          .toLowerCase();
+        if (
+          [
+            "approved",
+            "success",
+            "done",
+            "completed",
+            "posted",
+            "rss_success",
+          ].includes(s)
+        )
+          return "Approved";
+        if (["rejected", "failed", "error", "rss_rejected"].includes(s))
+          return "Rejected";
+        return "Pending"; // includes "", "pending", "queue", "queued", "for review", "rss_pending", etc.
+      };
 
-      const all = rows
-        .map((row: any, idx: number): NewsRow | null => {
-          const c = row?.c ?? [];
+      const all: NewsRow[] = (json.table?.rows ?? [])
+        .map((row, idx): NewsRow | null => {
+          const c = row.c ?? [];
+
+          // keep your visible "Row" as-is (you currently show ~idx+2 in UI)
           const index = Number(cellVal(c, NEWS_INDEX_COL)) || idx + 2;
 
-          const status = toStatus(cellVal(c, NEWS_STATUS_COL));
+          const status = stageOf(cellVal(c, NEWS_STATUS_COL));
 
           const articleTitle = String(c[0]?.v ?? "");
           const caption = String(c[8]?.v ?? "");
@@ -464,7 +451,7 @@ export const useContentManagement = () => {
           return {
             id: `news-${idx}`,
             index,
-            rowNumber: index,
+            rowNumber: index, // UI row label (leave as-is)
             actualArrayIndex: idx,
             articleTitle,
             caption,
@@ -485,21 +472,69 @@ export const useContentManagement = () => {
             dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
           };
         })
-        // show ONLY items still for approval (not approved/posted, not rejected)
-        .filter(
-          (r): r is NewsRow =>
-            r !== null &&
-            r.status === "Pending" &&
-            (r.imageGenerated || "").toLowerCase() !== "yes"
-        )
+        .filter((r): r is NewsRow => r !== null)
         .reverse();
 
-      setNewsData(all);
+      // show only pending rows in the News tab
+      const pendingOnly = all.filter((r) => r.status === "Pending");
+
+      setNewsData(pendingOnly);
     } catch (e) {
       console.error("Error fetching news:", e);
       setNewsData([]);
     }
   }, [NEWS_SHEET_URL]);
+
+  const fetchRssNewsData = useCallback(async () => {
+    try {
+      const res = await fetch(RSS_NEWS_SHEET_URL);
+      const txt = await res.text();
+      const json = parseGViz(txt);
+
+      const all = (json.table?.rows ?? []).map((row, idx): RssNewsRow => {
+        const c = row.c ?? [];
+        const index = Number(cellVal(c, RSS_NEWS_INDEX_COL)) || idx + 2;
+
+        const stateRaw = cellVal(c, RSS_STATUS_COL); // S
+        const s = norm(stateRaw);
+        const status: RssNewsRow["status"] =
+          s === "approved" || s === "posted"
+            ? "Approved"
+            : s === "rejected"
+            ? "Rejected"
+            : "Pending";
+
+        return {
+          id: `hnn-${idx}`,
+          index,
+          rowNumber: index,
+          actualArrayIndex: idx,
+          title: cellVal(c, 9),
+          contentSnippet: cellVal(c, 11),
+          source: cellVal(c, 7),
+          link: cellVal(c, 5),
+          creator: cellVal(c, 8),
+          date: cellVal(c, 3),
+          proceedToProduction: stateRaw,
+          status,
+          timestamp: Date.now() - idx * 1000,
+          sheet: "HNN RSS",
+          uid: cellVal(c, 2),
+          type: cellVal(c, 12),
+          truthScore: cellVal(c, 13),
+          keywords: cellVal(c, 16),
+          dup: cellVal(c, 17),
+          category: cellVal(c, 19),
+          priority: cellVal(c, 20),
+        };
+      });
+
+      setRssNewsData(all.reverse());
+    } catch (e) {
+      console.error("Error fetching rssNews:", e);
+      setRssNewsData([]);
+    }
+  }, [RSS_NEWS_SHEET_URL]);
 
   const fetchRssData = useCallback(async () => {
     try {
