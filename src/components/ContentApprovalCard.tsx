@@ -10,18 +10,20 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronUp,
+  Trash2,
 } from "lucide-react";
 import { RejectionDialog } from "./RejectionDialog";
 import { useToast } from "@/hooks/use-toast";
 import { postWebhook } from "@/services/webhookService";
+import { getDupInfoFromItem } from "@/utils/dup";
 
-/** Keep your existing union so the rest of the app compiles */
 type ContentType =
   | "content"
   | "regenerated"
   | "news"
   | "rssNews"
   | "rss"
+  | "rssMedia"
   | "dentistry"
   | "rssDentistry";
 
@@ -43,21 +45,38 @@ interface ContentApprovalCardProps {
   showDeleteButton?: boolean;
 }
 
-/* ---------- helpers ---------- */
-
-// accept http(s) or data:image; trim first
+/* ---------- tiny helpers ---------- */
 const looksLikeUrl = (s?: string) =>
   typeof s === "string" && /^(https?:\/\/|data:image\/)/i.test(s.trim());
-
 const norm = (v: any) => (typeof v === "string" ? v.trim() : "");
 const asUrl = (v: any) => {
   const n = norm(v);
   return n && looksLikeUrl(n) ? n : "";
 };
+const firstNonEmpty = (...vals: (string | undefined | null)[]) =>
+  vals.find((v) => typeof v === "string" && v.trim() !== "")?.trim() ?? "";
 
-/** try many possible keys; gracefully handle flags like "YES" */
+const pickCaption = (it: any) =>
+  firstNonEmpty(
+    it.caption,
+    it.caption_generated,
+    it.generatedCaption,
+    it.captionText,
+    it.aiCaption,
+    it.generated_caption,
+    it.Caption
+  );
+
+const pickHeadline = (it: any) =>
+  firstNonEmpty(
+    it.headline,
+    it.generatedHeadline,
+    it.headline_generated,
+    it.title,
+    it.articleTitle
+  );
+
 const pickImageUrl = (it: any): string => {
-  // most likely fields first
   const candidates = [
     it.regeneratedImage,
     it.generatedImage,
@@ -74,56 +93,27 @@ const pickImageUrl = (it: any): string => {
     it.AI_Image_URL,
     it.photo,
     it.picture,
-    it.image, // keep late; this is often noisy
-    it.imageGenerated, // sometimes a URL, sometimes "YES"
+    it.image,
+    it.imageGenerated,
     it.image_generated,
   ];
-
   for (const c of candidates) {
     const url = asUrl(c);
     if (url) return url;
   }
-
-  // special case: sheet stores a boolean/flag like "YES"/true
   const gen = String(
     it.imageGenerated ?? it.image_generated ?? ""
   ).toUpperCase();
   if (gen === "YES" || gen === "TRUE") {
-    const fallback =
+    const fb =
       asUrl(it.finalImage) ||
       asUrl(it.regeneratedImage) ||
       asUrl(it.imageUrl) ||
       asUrl(it.generatedImage);
-    if (fallback) return fallback;
+    if (fb) return fb;
   }
-
   return "";
 };
-
-const firstNonEmpty = (...vals: (string | undefined)[]) =>
-  vals.find((v) => typeof v === "string" && v.trim() !== "") ?? "";
-
-/** broaden caption detection */
-const pickCaption = (it: any) =>
-  firstNonEmpty(
-    it.caption,
-    it.caption_generated,
-    it.generatedCaption,
-    it.captionText,
-    it.aiCaption,
-    it.generated_caption,
-    it.Caption
-  );
-
-/** broaden headline detection */
-const pickHeadline = (it: any) =>
-  firstNonEmpty(
-    it.headline,
-    it.generatedHeadline,
-    it.headline_generated,
-    it.title, // sometimes this is the only field
-    it.articleTitle // news rows
-  );
 
 const statusToBadge = (status?: string) => {
   switch (status) {
@@ -138,13 +128,165 @@ const statusToBadge = (status?: string) => {
   }
 };
 
-/* ---------- component ---------- */
+/** Map UI tab → exact sheet/tab name */
+function sheetNameFor(contentType: string, item: any) {
+  const t = String(contentType || "");
+  if (t === "rssNews") return "HNN RSS";
+  if (t === "rssDentistry") return "Dental RSS";
+  if (t === "rss" || t === "rssMedia") return "Thumbnail System";
+  if (t === "news") return "HEALTH NEWS USA- THUMBNAILS";
+  if (t === "dentistry") return "DENTAL";
+  return item?.sheet || "text/image"; // content / regenerated
+}
 
+/** What the webhook expects */
+function contentTypeForWebhook(ct: string) {
+  const x = String(ct || "").trim();
+  if (x === "rssNews") return "rssNews";
+  if (x === "rssDentistry") return "rssDentistry";
+  if (x === "rss" || x === "rssMedia") return "rss"; // normalize media rss → "rss"
+  if (x === "regenerated") return "content";
+  return x; // "content" | "news" | "dentistry"
+}
+
+/** Optional router key for n8n (if you branch in your flow) */
+function routeKey(contentType: string, sheet?: string) {
+  const ct = String(contentType || "");
+  if (
+    ct === "rssNews" ||
+    ct === "rssDentistry" ||
+    ct === "rss" ||
+    ct === "rssMedia"
+  )
+    return "rss";
+  if (ct === "content" || ct === "regenerated") return "content";
+  if (ct === "news") return "news";
+  if (ct === "dentistry") return "dentistry";
+
+  const s = String(sheet || "");
+  if (/HNN RSS/i.test(s)) return "rssNews";
+  if (/Dental RSS/i.test(s)) return "rssDentistry";
+  if (/Thumbnail System/i.test(s)) return "rss";
+  return "content";
+}
+
+/** Build webhook payload — uses INDEX column if valid, with strong fallbacks */
+function buildWebhookPayload(
+  action: "approve" | "reject",
+  contentType: string,
+  item: any
+) {
+  const uiType = String(contentType || "").trim();
+
+  // Normalize type (service + route)
+  const serviceType =
+    uiType === "rssNews"
+      ? "rssNews"
+      : uiType === "rssDentistry"
+      ? "rssDentistry"
+      : uiType === "rss" || uiType === "rssMedia"
+      ? "rss"
+      : uiType === "regenerated"
+      ? "content"
+      : uiType;
+
+  const route =
+    uiType === "rss" || uiType === "rssMedia"
+      ? "rssMedia"
+      : uiType === "rssNews"
+      ? "rssNews"
+      : uiType === "rssDentistry"
+      ? "rssDentistry"
+      : serviceType;
+
+  const sheet =
+    route === "rssMedia"
+      ? "Thumbnail System"
+      : item?.sheet ||
+        (serviceType === "news"
+          ? "HEALTH NEWS USA- THUMBNAILS"
+          : serviceType === "dentistry"
+          ? "DENTAL"
+          : serviceType === "rssNews"
+          ? "HNN RSS"
+          : serviceType === "rssDentistry"
+          ? "Dental RSS"
+          : "text/image");
+
+  // Preferred row = INDEX col shown in UI (must be >=2)
+  const toInt = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : NaN;
+  };
+  let row =
+    toInt(item?.index) ||
+    toInt(item?.rowNumber) ||
+    toInt(item?.row) ||
+    (item?.actualArrayIndex != null ? toInt(item.actualArrayIndex) + 2 : NaN);
+
+  if (!Number.isFinite(row) || row < 2) row = NaN;
+
+  // Extra lookup keys for backend fallback (pick only stable identifiers)
+  const lookup = {
+    uid: item?.uid || item?.id || "",
+    link:
+      item?.link ||
+      item?.articleLink ||
+      item?.url ||
+      item?.sourceLink ||
+      item?.source ||
+      "",
+    title: item?.title || item?.headline || item?.articleTitle || "",
+    // If you have an “INDEX” column value separately, include it too:
+    index: Number.isFinite(toInt(item?.index))
+      ? String(toInt(item?.index))
+      : "",
+  };
+
+  // Minimal content bits
+  const content = {
+    title: lookup.title,
+    caption: item?.caption || "",
+    snippet: item?.contentSnippet || "",
+  };
+
+  return {
+    action,
+    contentType: serviceType,
+    route,
+    sheet,
+    // send both the numeric row (if valid) and lookup keys
+    row: Number.isFinite(row) ? row : null,
+    lookup, // ← let n8n find the row by value if row fails
+    // keep legacy fields for compatibility
+    index: toInt(item?.index) || 0,
+    fallbackRow: toInt(item?.rowNumber) || 0,
+    uid: lookup.uid,
+    id: item?.id ?? "",
+    link: lookup.link,
+    ...content,
+    // reject extras (handlers will fill)
+    feedback: "",
+    image_query: "",
+    headline_improvements: "",
+    caption_improvements: "",
+    // debug
+    __debug: {
+      uiType,
+      serviceType,
+      route,
+      computedRow: row,
+      hadIndex: !!item?.index,
+      sheet,
+    },
+  };
+}
+/* ---------- component ---------- */
 export const ContentApprovalCard = ({
   item,
   onApprove,
   onReject,
-  showRejectionDialog = false,
+  showRejectionDialog = true,
   contentType = "content",
   buttonState = null,
   onUndo,
@@ -156,6 +298,14 @@ export const ContentApprovalCard = ({
   const [isRejecting, setIsRejecting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const { toast } = useToast();
+
+  const dupInfo = useMemo(() => getDupInfoFromItem(item), [item]);
+
+  const isRSS =
+    contentType === "rss" ||
+    contentType === "rssNews" ||
+    contentType === "rssDentistry" ||
+    contentType === "rssMedia";
 
   const link = useMemo(
     () =>
@@ -169,91 +319,58 @@ export const ContentApprovalCard = ({
     [item]
   );
 
-  // Robust derivations for image/caption/headline
-  const imageUrl = useMemo(() => pickImageUrl(item), [item]);
-  const captionText = useMemo(() => pickCaption(item), [item]);
-  const headlineText = useMemo(() => pickHeadline(item), [item]);
-
-  /*
+  const imageUrl = useMemo(
+    () => (isRSS ? "" : pickImageUrl(item)),
+    [item, isRSS]
+  );
   const captionText = useMemo(
-    () =>
-      firstNonEmpty(
-        item.caption,
-        item.generatedCaption,
-        item.captionText,
-        item.caption_generated,
-        item.aiCaption
-      ),
-    [item]
+    () => (isRSS ? "" : pickCaption(item)),
+    [item, isRSS]
+  );
+  const headlineText = useMemo(
+    () => (isRSS ? "" : pickHeadline(item)),
+    [item, isRSS]
   );
 
-  const headlineText = useMemo(
-    () => firstNonEmpty(item.headline, item.generatedHeadline, item.title),
-    [item]
-  ); */
-
   useEffect(() => {
-    // Dev aid: if you expected an image but didn't get one, log keys once
-    // (safe to remove later)
-    if (
-      !imageUrl &&
-      (contentType === "content" || contentType === "regenerated")
-    ) {
-      // console.debug("Card item keys (no image detected):", Object.keys(item));
-      // console.debug("imageGenerated value:", item.imageGenerated);
-    }
+    // keep for debug if needed
   }, [imageUrl, item, contentType]);
-
-  const actionMessage = useMemo(() => {
-    if (buttonState === "approved") {
-      return contentType === "content" || contentType === "regenerated"
-        ? "Approved and sent for scheduling"
-        : "Sent for production";
-    }
-    if (buttonState === "rejected") {
-      return contentType === "content" || contentType === "regenerated"
-        ? "Sent for regeneration"
-        : "Rejected, not sent for production";
-    }
-    return null;
-  }, [buttonState, contentType]);
 
   const handleApprove = async () => {
     if (isApproving) return;
     setIsApproving(true);
     try {
-      const sheetName =
-        contentType === "rss"
-          ? "Thumbnail System"
-          : contentType === "rssNews"
-          ? "HNN RSS"
-          : contentType === "rssDentistry"
-          ? "Dental RSS"
-          : item.sheet; // e.g. "text/image" or "DENTAL"
+      const payload = buildWebhookPayload("approve", contentType, item);
 
-      await postWebhook({
-        action: "approve",
-        contentType,
-        sheet: sheetName,
-        row: item.rowNumber ?? item.row,
-        title: item.title || item.headline || "",
-        caption: item.caption || "",
-      });
+      // NEW: payagan kung may valid row OR may lookup(uid/link)
+      const hasValidRow =
+        Number.isFinite(payload.row as number) && (payload.row as number) >= 2;
+      const hasLookup =
+        !!payload.lookup?.uid ||
+        !!payload.lookup?.link ||
+        !!payload.lookup?.index;
+
+      if (!hasValidRow && !hasLookup) {
+        throw new Error(
+          `No row or lookup keys. dbg={index:${item?.index}, rowNumber:${item?.rowNumber}, actualArrayIndex:${item?.actualArrayIndex}}`
+        );
+      }
+
+      await postWebhook(payload);
 
       toast({
-        title: "Content Approved",
+        title: "Approved",
         description:
           contentType === "content" || contentType === "regenerated"
             ? "Approved and sent for scheduling"
             : "Sent for production",
       });
-
       onApprove(item);
-    } catch (error) {
-      console.error("Approval error:", error);
+    } catch (err: any) {
+      console.error("Approval error:", err);
       toast({
         title: "Approval Failed",
-        description: error instanceof Error ? error.message : "Unknown error",
+        description: err?.message || "Unknown error",
         variant: "destructive",
       });
     } finally {
@@ -270,36 +387,35 @@ export const ContentApprovalCard = ({
     if (isRejecting) return;
     setIsRejecting(true);
     try {
-      const sheetName =
-        contentType === "rss"
-          ? "Thumbnail System"
-          : contentType === "rssNews"
-          ? "HNN RSS"
-          : contentType === "rssDentistry"
-          ? "Dental RSS"
-          : item.sheet;
+      const payload = buildWebhookPayload("reject", contentType, item);
+      payload.feedback = feedback || "";
+      payload.image_query = imageQuery || "";
+      payload.headline_improvements = headlineImprovements || "";
+      payload.caption_improvements = captionImprovements || "";
 
-      await postWebhook({
-        action: "reject",
-        contentType,
-        sheet: sheetName,
-        row: item.rowNumber ?? item.row,
-        title: item.title || item.headline || "",
-        caption: item.caption || "",
-        feedback: feedback || "",
-        image_query: imageQuery || "",
-        headline_improvements: headlineImprovements || "",
-        caption_improvements: captionImprovements || "",
-      });
+      // NEW
+      const hasValidRow =
+        Number.isFinite(payload.row as number) && (payload.row as number) >= 2;
+      const hasLookup =
+        !!payload.lookup?.uid ||
+        !!payload.lookup?.link ||
+        !!payload.lookup?.index;
+
+      if (!hasValidRow && !hasLookup) {
+        throw new Error(
+          `No row or lookup keys. dbg={index:${item?.index}, rowNumber:${item?.rowNumber}, actualArrayIndex:${item?.actualArrayIndex}}`
+        );
+      }
+
+      await postWebhook(payload);
 
       toast({
-        title: "Content Rejected",
+        title: "Rejected",
         description:
           contentType === "content" || contentType === "regenerated"
             ? "Sent for regeneration"
             : "Rejected, not sent for production",
       });
-
       onReject(
         item,
         feedback,
@@ -307,11 +423,11 @@ export const ContentApprovalCard = ({
         headlineImprovements,
         captionImprovements
       );
-    } catch (error) {
-      console.error("Rejection error:", error);
+    } catch (err: any) {
+      console.error("Rejection error:", err);
       toast({
         title: "Rejection Failed",
-        description: error instanceof Error ? error.message : "Unknown error",
+        description: err?.message || "Unknown error",
         variant: "destructive",
       });
     } finally {
@@ -319,16 +435,29 @@ export const ContentApprovalCard = ({
     }
   };
 
-  const openRejectionDialog = () => {
-    if (contentType === "content" || contentType === "regenerated") {
+  // Which tabs should open a dialog on Reject?
+  const CT_NEEDS_DIALOG = new Set<string>([
+    "content",
+    "regenerated",
+    "rssNews",
+    "rssDentistry",
+    "rss",
+    "rssMedia",
+  ]);
+
+  function needsRejectDialog(ct?: string) {
+    return CT_NEEDS_DIALOG.has(String(ct || "").trim());
+  }
+
+  const onRejectClick = () => {
+    if (needsRejectDialog(contentType)) {
       setRejectionDialogOpen(true);
     } else {
-      // non-content types can reject immediately
       handleReject();
     }
   };
 
-  /** MINIMAL REJECTED CARD for non-content types */
+  // Minimal rejected card (non-content types)
   if (
     buttonState === "rejected" &&
     contentType !== "content" &&
@@ -343,9 +472,9 @@ export const ContentApprovalCard = ({
               <span className="text-sm text-red-700 font-medium">
                 Not sent for production
               </span>
-              {(item.rowNumber || item.row) && (
+              {item.index && (
                 <span className="text-xs bg-red-100 px-2 py-1 rounded text-red-600">
-                  Row: {item.rowNumber || item.row}
+                  Row: {item.index}
                 </span>
               )}
             </div>
@@ -425,15 +554,6 @@ export const ContentApprovalCard = ({
                 </div>
               )}
 
-              {item.articleAuthors && (
-                <div>
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    AUTHORS
-                  </Label>
-                  <p className="text-sm mt-1">{item.articleAuthors}</p>
-                </div>
-              )}
-
               {item.source && (
                 <div>
                   <Label className="text-xs font-medium text-muted-foreground">
@@ -459,9 +579,9 @@ export const ContentApprovalCard = ({
                 {item.status ?? "Unknown"}
               </Badge>
 
-              {(item.rowNumber || item.row) && (
+              {item.index && (
                 <span className="text-xs bg-blue-100 px-2 py-1 rounded text-blue-600">
-                  Row: {item.rowNumber || item.row}
+                  Row: {item.index}
                 </span>
               )}
 
@@ -495,9 +615,8 @@ export const ContentApprovalCard = ({
                   Truth:{" "}
                   {(() => {
                     const num = Number(item.truthScore);
-                    if (!isNaN(num)) {
+                    if (!isNaN(num))
                       return `${Math.round(num <= 1 ? num * 100 : num)}%`;
-                    }
                     return String(item.truthScore);
                   })()}
                 </span>
@@ -509,103 +628,28 @@ export const ContentApprovalCard = ({
                 </span>
               )}
 
-              {item.new && (
-                <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
-                  Is New? {item.new}
-                </span>
-              )}
-
               {item.keywords && (
                 <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
                   Keywords: {item.keywords}
                 </span>
               )}
 
-              {item.dup && (
-                <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
-                  Is Dup? {item.dup}
-                </span>
-              )}
+              <span
+                className={`text-xs px-2 py-1 rounded ${
+                  dupInfo.tag === "YES"
+                    ? "bg-red-100 text-red-600"
+                    : "bg-gray-100 text-gray-600"
+                }`}
+                title={dupInfo.reason || "No duplicate markers"}
+              >
+                Is Dup? {dupInfo.tag}
+              </span>
             </div>
           </div>
         </CardHeader>
 
         <CardContent>
-          {/* Rich image + text layout */}
-          {(imageUrl || captionText || headlineText) && (
-            <div className="flex flex-col md:flex-row gap-4 mb-6">
-              <div className="md:w-2/5 flex-shrink-0">
-                {imageUrl && (
-                  <>
-                    <Label className="text-xs font-medium text-muted-foreground mb-2 block">
-                      {contentType === "regenerated"
-                        ? "REGENERATED IMAGE (Column L)"
-                        : "AI-GENERATED IMAGE"}
-                    </Label>
-                    <div className="aspect-[4/5] w-full max-w-[300px] mx-auto md:mx-0">
-                      <img
-                        src={imageUrl}
-                        alt={
-                          contentType === "regenerated"
-                            ? "Regenerated content"
-                            : "AI Generated content"
-                        }
-                        className="w-full h-full object-cover rounded-md shadow-sm border"
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="md:w-3/5 flex flex-col">
-                {headlineText && (
-                  <div className="flex-1">
-                    <Label className="text-xs font-medium text-muted-foreground mb-2 block">
-                      HEADLINE
-                    </Label>
-                    <div className="h-full">
-                      <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans break-words">
-                        {headlineText}
-                      </pre>
-                      <br />
-                    </div>
-                  </div>
-                )}
-
-                {captionText && (
-                  <div className="flex-1">
-                    <Label className="text-xs font-medium text-muted-foreground mb-2 block">
-                      {contentType === "regenerated"
-                        ? "CAPTION (Column C)"
-                        : "CAPTION GENERATED"}
-                    </Label>
-                    <div className="h-full">
-                      <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans break-words">
-                        {captionText}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Link */}
-          {link && (
-            <div className="mt-4">
-              <a
-                href={link}
-                target="_blank"
-                rel="noreferrer"
-                className="text-sm text-blue-600 underline"
-              >
-                View Article
-              </a>
-            </div>
-          )}
-
-          {/* Legacy layout if no image/headline/caption */}
-          {!(imageUrl || captionText || headlineText) && (
+          {isRSS ? (
             <div className="space-y-4">
               {firstNonEmpty(item.title, item.articleTitle) && (
                 <div>
@@ -629,95 +673,193 @@ export const ContentApprovalCard = ({
                 </div>
               )}
 
-              {item.articleText && (
-                <div>
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    ARTICLE TEXT
-                  </Label>
-                  <p className="text-sm mt-1 leading-relaxed">
-                    {String(item.articleText).substring(0, 300)}…
-                  </p>
-                </div>
-              )}
-
-              {item.source && (
-                <div>
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    Domain
-                  </Label>
-                  <p className="text-sm mt-1">{item.source}</p>
-                </div>
-              )}
-
-              {firstNonEmpty(item.pubDate, item.pubdate) && (
-                <div>
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    PUBLICATION
-                  </Label>
-                  <p className="text-sm mt-1">
-                    {firstNonEmpty(item.pubDate, item.pubdate)}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Action buttons */}
-          {item.status === "Pending" && !buttonState && (
-            <div className="flex flex-col sm:flex-row gap-2 mt-4">
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-green-600 border-green-600 hover:bg-green-50 flex-1"
-                onClick={handleApprove}
-                disabled={isApproving || isRejecting}
-              >
-                <CheckCircle className="h-4 w-4 mr-1" />
-                {isApproving ? "Approving..." : "Approve"}
-              </Button>
-
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-red-600 border-red-600 hover:bg-red-50 flex-1"
-                onClick={() =>
-                  contentType === "content" || contentType === "regenerated"
-                    ? setRejectionDialogOpen(true)
-                    : handleReject()
-                }
-                disabled={isRejecting || isApproving}
-              >
-                <XCircle className="h-4 w-4 mr-1" />
-                {isRejecting ? "Rejecting..." : "Reject"}
-              </Button>
-            </div>
-          )}
-
-          {/* Undo / status note */}
-          {buttonState && actionMessage && (
-            <div className="mt-4 p-3 rounded-md bg-gray-100">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-gray-700">
-                  {actionMessage}
-                </p>
-                {onUndo && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-blue-600 hover:bg-blue-50"
-                    onClick={() => onUndo(item)}
+              {link && (
+                <div className="mt-2">
+                  <a
+                    href={link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm text-blue-600 underline"
                   >
-                    <RotateCcw className="h-4 w-4 mr-1" />
-                    Undo
-                  </Button>
-                )}
-              </div>
+                    Open source
+                  </a>
+                </div>
+              )}
             </div>
+          ) : (
+            <>
+              {(imageUrl || captionText || headlineText) && (
+                <div className="flex flex-col md:flex-row gap-4 mb-6">
+                  <div className="md:w-2/5 flex-shrink-0">
+                    {imageUrl && (
+                      <>
+                        <Label className="text-xs font-medium text-muted-foreground mb-2 block">
+                          {contentType === "regenerated"
+                            ? "REGENERATED IMAGE (Column L)"
+                            : "AI-GENERATED IMAGE"}
+                        </Label>
+                        <div className="aspect-[4/5] w-full max-w-[300px] mx-auto md:mx-0">
+                          <img
+                            src={imageUrl}
+                            alt={
+                              contentType === "regenerated"
+                                ? "Regenerated content"
+                                : "AI Generated content"
+                            }
+                            className="w-full h-full object-cover rounded-md shadow-sm border"
+                            loading="lazy"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="md:w-3/5 flex flex-col">
+                    {headlineText && (
+                      <div className="flex-1">
+                        <Label className="text-xs font-medium text-muted-foreground mb-2 block">
+                          HEADLINE
+                        </Label>
+                        <div className="h-full">
+                          <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans break-words">
+                            {headlineText}
+                          </pre>
+                          <br />
+                        </div>
+                      </div>
+                    )}
+
+                    {captionText && (
+                      <div className="flex-1">
+                        <Label className="text-xs font-medium text-muted-foreground mb-2 block">
+                          {contentType === "regenerated"
+                            ? "CAPTION (Column C)"
+                            : "CAPTION GENERATED"}
+                        </Label>
+                        <div className="h-full">
+                          <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans break-words">
+                            {captionText}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {link && (
+                <div className="mt-4">
+                  <a
+                    href={link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sm text-blue-600 underline"
+                  >
+                    View Article
+                  </a>
+                </div>
+              )}
+
+              {!(imageUrl || captionText || headlineText) && (
+                <div className="space-y-4">
+                  {firstNonEmpty(item.title, item.articleTitle) && (
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">
+                        TITLE
+                      </Label>
+                      <p className="text-lg font-semibold mt-1 leading-tight">
+                        {firstNonEmpty(item.title, item.articleTitle)}
+                      </p>
+                    </div>
+                  )}
+
+                  {item.contentSnippet && (
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">
+                        CONTENT
+                      </Label>
+                      <p className="text-sm mt-1 leading-relaxed">
+                        {item.contentSnippet}
+                      </p>
+                    </div>
+                  )}
+
+                  {item.articleText && (
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">
+                        ARTICLE TEXT
+                      </Label>
+                      <p className="text-sm mt-1 leading-relaxed">
+                        {String(item.articleText).substring(0, 300)}…
+                      </p>
+                    </div>
+                  )}
+
+                  {item.source && (
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">
+                        Domain
+                      </Label>
+                      <p className="text-sm mt-1">{item.source}</p>
+                    </div>
+                  )}
+
+                  {firstNonEmpty(item.pubDate, item.pubdate) && (
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">
+                        PUBLICATION
+                      </Label>
+                      <p className="text-sm mt-1">
+                        {firstNonEmpty(item.pubDate, item.pubdate)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
+
+          {/* Buttons */}
+          {(() => {
+            const status = String(item?.status || "").toLowerCase();
+            const isPendingLike =
+              !status ||
+              status.includes("pending") ||
+              status.includes("queue") ||
+              status.includes("review");
+            const showButtons = isPendingLike && !buttonState;
+            if (!showButtons) return null;
+
+            return (
+              <div className="flex flex-col sm:flex-row gap-2 mt-4">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-green-600 border-green-600 hover:bg-green-50 flex-1"
+                  onClick={handleApprove}
+                  disabled={isApproving || isRejecting}
+                >
+                  <CheckCircle className="h-4 w-4 mr-1" />
+                  {isApproving ? "Approving..." : "Approve"}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-red-600 border-red-600 hover:bg-red-50 flex-1"
+                  onClick={onRejectClick}
+                  disabled={isRejecting || isApproving}
+                >
+                  <XCircle className="h-4 w-4 mr-1" />
+                  {isRejecting ? "Rejecting..." : "Reject"}
+                </Button>
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 
-      {/* Content/regenerated only */}
+      {/* Always mounted so it can open */}
       <RejectionDialog
         isOpen={rejectionDialogOpen}
         onClose={() => setRejectionDialogOpen(false)}
