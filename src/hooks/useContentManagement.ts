@@ -414,35 +414,31 @@ export const useContentManagement = () => {
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      // helper to normalize many spellings into 3 buckets
-      const stageOf = (raw: unknown) => {
-        const s = String(raw ?? "")
-          .trim()
-          .toLowerCase();
-        if (
-          [
-            "approved",
-            "success",
-            "done",
-            "completed",
-            "posted",
-            "rss_success",
-          ].includes(s)
-        )
-          return "Approved";
-        if (["rejected", "failed", "error", "rss_rejected"].includes(s))
-          return "Rejected";
-        return "Pending"; // includes "", "pending", "queue", "queued", "for review", "rss_pending", etc.
-      };
-
-      const all: NewsRow[] = (json.table?.rows ?? [])
+      const all = (json.table?.rows ?? [])
         .map((row, idx): NewsRow | null => {
           const c = row.c ?? [];
-
-          // keep your visible "Row" as-is (you currently show ~idx+2 in UI)
           const index = Number(cellVal(c, NEWS_INDEX_COL)) || idx + 2;
 
-          const status = stageOf(cellVal(c, NEWS_STATUS_COL));
+          // ✅ status normalization
+          const stateRaw = norm(cellVal(c, NEWS_STATUS_COL));
+          let status: NewsRow["status"];
+          if (stateRaw === "approved") {
+            status = "Approved";
+          } else if (
+            stateRaw === "posted" ||
+            stateRaw === "done" ||
+            stateRaw === "success"
+          ) {
+            status = "Final"; // <- new bucket: skip these
+          } else if (
+            stateRaw === "rejected" ||
+            stateRaw === "failed" ||
+            stateRaw === "error"
+          ) {
+            status = "Rejected";
+          } else {
+            status = "Pending";
+          }
 
           const articleTitle = String(c[0]?.v ?? "");
           const caption = String(c[8]?.v ?? "");
@@ -451,7 +447,7 @@ export const useContentManagement = () => {
           return {
             id: `news-${idx}`,
             index,
-            rowNumber: index, // UI row label (leave as-is)
+            rowNumber: index,
             actualArrayIndex: idx,
             articleTitle,
             caption,
@@ -460,7 +456,7 @@ export const useContentManagement = () => {
             link: String(c[1]?.v ?? ""),
             pubDate: String(c[2]?.v ?? ""),
             creator: String(c[3]?.v ?? ""),
-            status, // "Pending" | "Approved" | "Rejected"
+            status,
             timestamp: Date.now() - idx * 1000,
             sheet: "HEALTH NEWS USA- THUMBNAILS",
             imageGenerated: String(c[6]?.v ?? ""),
@@ -472,13 +468,11 @@ export const useContentManagement = () => {
             dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
           };
         })
-        .filter((r): r is NewsRow => r !== null)
+        // ✅ only keep Pending
+        .filter((r): r is NewsRow => r !== null && r.status === "Pending")
         .reverse();
 
-      // show only pending rows in the News tab
-      const pendingOnly = all.filter((r) => r.status === "Pending");
-
-      setNewsData(pendingOnly);
+      setNewsData(all);
     } catch (e) {
       console.error("Error fetching news:", e);
       setNewsData([]);
