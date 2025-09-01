@@ -421,6 +421,8 @@ export const useContentManagement = () => {
 
           const stateRaw = cellVal(c, NEWS_STATUS_COL); // S
           const s = norm(stateRaw);
+
+          // Normalize to one of: "Approved" | "Rejected" | "Pending"
           const status: NewsRow["status"] =
             s === "approved" || s === "posted"
               ? "Approved"
@@ -456,7 +458,8 @@ export const useContentManagement = () => {
             dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
           };
         })
-        .filter((r): r is NewsRow => r !== null)
+        // Show ONLY items that still need approval (i.e., not approved/posted)
+        .filter((r): r is NewsRow => r !== null && r.status === "Pending")
         .reverse();
 
       setNewsData(all);
