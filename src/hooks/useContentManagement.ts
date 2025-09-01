@@ -409,26 +409,53 @@ export const useContentManagement = () => {
   }, [CONTENT_SHEET_URL]);
 
   const fetchNewsData = useCallback(async () => {
+    // Helpers kept local to this function; move them out if you reuse elsewhere.
+    const clean = (x: unknown) =>
+      (x ?? "")
+        .toString()
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[^a-z]/g, ""); // strip spaces, emojis, punctuation, accents
+
+    const toStatus = (raw: unknown): NewsRow["status"] => {
+      const s = clean(raw);
+      if (
+        [
+          "approved",
+          "posted",
+          "publish",
+          "published",
+          "live",
+          "scheduled",
+        ].some((k) => s.includes(k))
+      ) {
+        return "Approved";
+      }
+      if (["rejected", "reject", "declined"].some((k) => s.includes(k))) {
+        return "Rejected";
+      }
+      return "Pending";
+    };
+
     try {
-      const res = await fetch(NEWS_SHEET_URL);
+      // Kill caching on GViz responses
+      const url = `${NEWS_SHEET_URL}${
+        NEWS_SHEET_URL.includes("?") ? "&" : "?"
+      }_cb=${Date.now()}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status} fetching sheet`);
+
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const all = (json.table?.rows ?? [])
-        .map((row, idx): NewsRow | null => {
-          const c = row.c ?? [];
+      const rows = Array.isArray(json.table?.rows) ? json.table.rows : [];
+
+      const all = rows
+        .map((row: any, idx: number): NewsRow | null => {
+          const c = row?.c ?? [];
           const index = Number(cellVal(c, NEWS_INDEX_COL)) || idx + 2;
 
-          const stateRaw = cellVal(c, NEWS_STATUS_COL); // S
-          const s = norm(stateRaw);
-
-          // Normalize to one of: "Approved" | "Rejected" | "Pending"
-          const status: NewsRow["status"] =
-            s === "approved" || s === "posted"
-              ? "Approved"
-              : s === "rejected"
-              ? "Rejected"
-              : "Pending";
+          const status = toStatus(cellVal(c, NEWS_STATUS_COL));
 
           const articleTitle = String(c[0]?.v ?? "");
           const caption = String(c[8]?.v ?? "");
@@ -446,7 +473,7 @@ export const useContentManagement = () => {
             link: String(c[1]?.v ?? ""),
             pubDate: String(c[2]?.v ?? ""),
             creator: String(c[3]?.v ?? ""),
-            status,
+            status, // "Pending" | "Approved" | "Rejected"
             timestamp: Date.now() - idx * 1000,
             sheet: "HEALTH NEWS USA- THUMBNAILS",
             imageGenerated: String(c[6]?.v ?? ""),
@@ -458,8 +485,13 @@ export const useContentManagement = () => {
             dup: (c[27]?.v ?? "").toString().trim() !== "" ? "YES" : "NO",
           };
         })
-        // Show ONLY items that still need approval (i.e., not approved/posted)
-        .filter((r): r is NewsRow => r !== null && r.status === "Pending")
+        // show ONLY items still for approval (not approved/posted, not rejected)
+        .filter(
+          (r): r is NewsRow =>
+            r !== null &&
+            r.status === "Pending" &&
+            (r.imageGenerated || "").toLowerCase() !== "yes"
+        )
         .reverse();
 
       setNewsData(all);
@@ -468,57 +500,6 @@ export const useContentManagement = () => {
       setNewsData([]);
     }
   }, [NEWS_SHEET_URL]);
-
-  const fetchRssNewsData = useCallback(async () => {
-    try {
-      const res = await fetch(RSS_NEWS_SHEET_URL);
-      const txt = await res.text();
-      const json = parseGViz(txt);
-
-      const all = (json.table?.rows ?? []).map((row, idx): RssNewsRow => {
-        const c = row.c ?? [];
-        const index = Number(cellVal(c, RSS_NEWS_INDEX_COL)) || idx + 2;
-
-        const stateRaw = cellVal(c, RSS_STATUS_COL); // S
-        const s = norm(stateRaw);
-        const status: RssNewsRow["status"] =
-          s === "approved" || s === "posted"
-            ? "Approved"
-            : s === "rejected"
-            ? "Rejected"
-            : "Pending";
-
-        return {
-          id: `hnn-${idx}`,
-          index,
-          rowNumber: index,
-          actualArrayIndex: idx,
-          title: cellVal(c, 9),
-          contentSnippet: cellVal(c, 11),
-          source: cellVal(c, 7),
-          link: cellVal(c, 5),
-          creator: cellVal(c, 8),
-          date: cellVal(c, 3),
-          proceedToProduction: stateRaw,
-          status,
-          timestamp: Date.now() - idx * 1000,
-          sheet: "HNN RSS",
-          uid: cellVal(c, 2),
-          type: cellVal(c, 12),
-          truthScore: cellVal(c, 13),
-          keywords: cellVal(c, 16),
-          dup: cellVal(c, 17),
-          category: cellVal(c, 19),
-          priority: cellVal(c, 20),
-        };
-      });
-
-      setRssNewsData(all.reverse());
-    } catch (e) {
-      console.error("Error fetching rssNews:", e);
-      setRssNewsData([]);
-    }
-  }, [RSS_NEWS_SHEET_URL]);
 
   const fetchRssData = useCallback(async () => {
     try {
