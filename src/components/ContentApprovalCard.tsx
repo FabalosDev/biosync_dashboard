@@ -16,6 +16,8 @@ import { RejectionDialog } from "./RejectionDialog";
 import { useToast } from "@/hooks/use-toast";
 import { postWebhook } from "@/services/webhookService";
 import { getDupInfoFromItem } from "@/utils/dup";
+import { ContentEditDialog } from "./ContentEditDialog";
+import { RssCompletionDialog } from "./RssCompletionDialog";
 
 type ContentType =
   | "content"
@@ -300,6 +302,9 @@ export const ContentApprovalCard = ({
   const { toast } = useToast();
 
   const dupInfo = useMemo(() => getDupInfoFromItem(item), [item]);
+  // under other useState hooks:
+  const [contentDialogOpen, setContentDialogOpen] = useState(false);
+  const [rssDialogOpen, setRssDialogOpen] = useState(false);
 
   const isRSS =
     contentType === "rss" ||
@@ -378,6 +383,55 @@ export const ContentApprovalCard = ({
     }
   };
 
+  // when ContentEditDialog submits
+  const handleContentDialogSubmit = (payload: {
+    kind: "content";
+    captionMode: "gpt" | "user";
+    thumbnailChange: "headline" | "image" | "both";
+    newHeadline?: string;
+    newImageUrl?: string;
+    newCaption?: string;
+  }) => {
+    // Reuse existing handleReject signature by packing fields
+    // feedback: short summary string for auditing
+    const summary = `Caption:${payload.captionMode} | Thumb:${payload.thumbnailChange}`;
+    const imageQuery = ""; // not used in new flow; keep empty
+    const headlineImprovements = payload.newHeadline || "";
+    const captionImprovements = payload.newCaption || "";
+
+    // You ALSO likely want to send newImageUrl explicitly. We'll stash it in feedback tail for now,
+    // AND add it to webhook payload via a custom field (see below).
+    handleReject(
+      `${summary}${
+        payload.newImageUrl ? ` | ImgURL:${payload.newImageUrl}` : ""
+      }`,
+      imageQuery,
+      headlineImprovements,
+      captionImprovements
+    );
+  };
+
+  // when RssCompletionDialog submits
+  const handleRssDialogSubmit = (payload: {
+    kind: "rss";
+    newCategory: string;
+    articleTitle: string;
+    articleHeadline: string;
+  }) => {
+    // Map into existing reject fields (keeps your n8n flow backwards compatible)
+    const feedback = `RSS Complete -> Category:${payload.newCategory}`;
+    const imageQuery = "";
+    const headlineImprovements = payload.articleHeadline;
+    const captionImprovements = payload.articleTitle;
+
+    handleReject(
+      feedback,
+      imageQuery,
+      headlineImprovements,
+      captionImprovements
+    );
+  };
+
   const handleReject = async (
     feedback?: string,
     imageQuery?: string,
@@ -390,6 +444,12 @@ export const ContentApprovalCard = ({
       const payload = buildWebhookPayload("reject", contentType, item);
       payload.feedback = feedback || "";
       payload.image_query = imageQuery || "";
+      if (feedback && /ImgURL:/.test(feedback)) {
+        // extract URL if we embedded it in the summary
+        const m = feedback.match(/ImgURL:([^\s]+)$/);
+        if (m?.[1]) (payload as any).new_image_url = m[1];
+      }
+
       payload.headline_improvements = headlineImprovements || "";
       payload.caption_improvements = captionImprovements || "";
 
@@ -439,6 +499,8 @@ export const ContentApprovalCard = ({
   const CT_NEEDS_DIALOG = new Set<string>([
     "content",
     "regenerated",
+    "news",
+    "dentistry",
     "rssNews",
     "rssDentistry",
     "rss",
@@ -450,10 +512,17 @@ export const ContentApprovalCard = ({
   }
 
   const onRejectClick = () => {
-    if (needsRejectDialog(contentType)) {
-      setRejectionDialogOpen(true);
+    // Content-like types use ContentEditDialog; RSS-like use RssCompletionDialog
+    const ct = String(contentType || "");
+    if (
+      ct === "content" ||
+      ct === "regenerated" ||
+      ct === "news" ||
+      ct === "dentistry"
+    ) {
+      setContentDialogOpen(true);
     } else {
-      handleReject();
+      setRssDialogOpen(true);
     }
   };
 
@@ -859,11 +928,24 @@ export const ContentApprovalCard = ({
         </CardContent>
       </Card>
 
-      {/* Always mounted so it can open */}
-      <RejectionDialog
-        isOpen={rejectionDialogOpen}
-        onClose={() => setRejectionDialogOpen(false)}
-        onSubmit={handleReject}
+      {/* CONTENT edit dialog */}
+      <ContentEditDialog
+        isOpen={contentDialogOpen}
+        onClose={() => setContentDialogOpen(false)}
+        onSubmit={(p) => {
+          handleContentDialogSubmit(p);
+          setContentDialogOpen(false);
+        }}
+      />
+
+      {/* RSS completion dialog */}
+      <RssCompletionDialog
+        isOpen={rssDialogOpen}
+        onClose={() => setRssDialogOpen(false)}
+        onSubmit={(p) => {
+          handleRssDialogSubmit(p);
+          setRssDialogOpen(false);
+        }}
       />
     </>
   );

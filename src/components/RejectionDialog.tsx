@@ -1,5 +1,4 @@
-
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -12,142 +11,313 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"; // shadcn radio
+import { cn } from "@/lib/utils"; // optional helper if you have it
 
-interface RejectionDialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSubmit: (feedback: string, imageQuery: string, headlineImprovements: string, captionImprovements: string) => void;
+/* =======================
+   Content Edit Dialog
+   ======================= */
+
+type CaptionMode = "gpt" | "user";
+type ThumbChange = "headline" | "image" | "both";
+
+export interface ContentEditPayload {
+  kind: "content";
+  captionMode: CaptionMode;
+  thumbnailChange: ThumbChange;
+  newHeadline?: string;
+  newImageUrl?: string;
+  newCaption?: string;
 }
 
-export const RejectionDialog = ({ isOpen, onClose, onSubmit }: RejectionDialogProps) => {
-  const [feedback, setFeedback] = useState("");
-  const [imageQuery, setImageQuery] = useState("");
-  const [headlineImprovements, setHeadlineImprovements] = useState("");
-  const [captionImprovements, setCaptionImprovements] = useState("");
-  const [selectedReason, setSelectedReason] = useState("");
-  const [customReason, setCustomReason] = useState("");
-  const [exactIssue, setExactIssue] = useState("");
+interface ContentEditDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (payload: ContentEditPayload) => void;
+}
 
-  const rejectionReasons = [
-    "Image not apt to the content",
-    "Incorrect Caption - regenerate caption",
-    "Incorrect information",
-    "Rephrase Headlines"
-  ];
+export const ContentEditDialog = ({
+  isOpen,
+  onClose,
+  onSubmit,
+}: ContentEditDialogProps) => {
+  const [captionMode, setCaptionMode] = useState<CaptionMode>("gpt");
+  const [thumbnailChange, setThumbnailChange] =
+    useState<ThumbChange>("headline");
+  const [newHeadline, setNewHeadline] = useState("");
+  const [newImageUrl, setNewImageUrl] = useState("");
+  const [newCaption, setNewCaption] = useState("");
 
-  const handleReasonClick = (reason: string) => {
-    setSelectedReason(reason);
-    if (reason !== "Others") {
-      setFeedback(reason);
-      setCustomReason("");
-    } else {
-      setFeedback("");
+  const needsHeadline = useMemo(
+    () => thumbnailChange === "headline" || thumbnailChange === "both",
+    [thumbnailChange]
+  );
+  const needsImage = useMemo(
+    () => thumbnailChange === "image" || thumbnailChange === "both",
+    [thumbnailChange]
+  );
+  const needsCaption = useMemo(() => captionMode === "user", [captionMode]);
+
+  const isValidUrl = (s: string) => {
+    if (!s.trim()) return false;
+    try {
+      const u = new URL(s.trim());
+      return !!u.protocol && !!u.host;
+    } catch {
+      return false;
     }
   };
 
-  const handleCustomReasonChange = (value: string) => {
-    setCustomReason(value);
-    if (selectedReason === "Others") {
-      setFeedback(`Others - ${value}`);
-    }
-  };
+  const canSubmit = useMemo(() => {
+    if (needsHeadline && newHeadline.trim() === "") return false;
+    if (needsImage && !isValidUrl(newImageUrl)) return false;
+    if (needsCaption && newCaption.trim() === "") return false;
+    return true;
+  }, [
+    needsHeadline,
+    newHeadline,
+    needsImage,
+    newImageUrl,
+    needsCaption,
+    newCaption,
+  ]);
 
   const handleSubmit = () => {
-    const finalFeedback = selectedReason === "Others" ? `Others - ${customReason}` : selectedReason;
-    const fullFeedback = exactIssue ? `${finalFeedback} - ${exactIssue}` : finalFeedback;
-    
-    onSubmit(fullFeedback, imageQuery, headlineImprovements, captionImprovements);
-    
-    // Reset form
-    setFeedback("");
-    setImageQuery("");
-    setHeadlineImprovements("");
-    setCaptionImprovements("");
-    setSelectedReason("");
-    setCustomReason("");
-    setExactIssue("");
+    const payload: ContentEditPayload = {
+      kind: "content",
+      captionMode,
+      thumbnailChange,
+      newHeadline: needsHeadline ? newHeadline.trim() : undefined,
+      newImageUrl: needsImage ? newImageUrl.trim() : undefined,
+      newCaption: needsCaption ? newCaption.trim() : undefined,
+    };
+    onSubmit(payload);
+    // reset
+    setCaptionMode("gpt");
+    setThumbnailChange("headline");
+    setNewHeadline("");
+    setNewImageUrl("");
+    setNewCaption("");
     onClose();
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[500px] max-h-[80vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[560px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Rejection Feedback</DialogTitle>
+          <DialogTitle>Content Edits</DialogTitle>
           <DialogDescription>
-            Please select a reason for rejection and provide detailed feedback for regeneration.
+            Choose how you want to update the caption and thumbnail, then
+            provide any new values.
           </DialogDescription>
         </DialogHeader>
+
         <div className="grid gap-4 py-4">
+          {/* Caption mode */}
           <div className="space-y-2">
-            <Label htmlFor="reason">Reason for rejection</Label>
-            <div className="grid grid-cols-1 gap-2">
-              {rejectionReasons.map((reason) => (
-                <Button
-                  key={reason}
-                  type="button"
-                  variant={selectedReason === reason ? "default" : "outline"}
-                  className="h-auto p-3 text-sm text-left justify-start"
-                  onClick={() => handleReasonClick(reason)}
-                >
-                  {reason}
-                </Button>
-              ))}
-            </div>
-            
-            {selectedReason && (
-              <div className="mt-3">
-                <Label htmlFor="exactIssue">Exact issue (optional)</Label>
+            <Label>Caption</Label>
+            <RadioGroup
+              value={captionMode}
+              onValueChange={(v: CaptionMode) => setCaptionMode(v)}
+              className="grid grid-cols-2 gap-2"
+            >
+              <div className="flex items-center space-x-2 rounded-md border p-3">
+                <RadioGroupItem id="cap-gpt" value="gpt" />
+                <Label htmlFor="cap-gpt" className="cursor-pointer">
+                  Generate by GPT
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2 rounded-md border p-3">
+                <RadioGroupItem id="cap-user" value="user" />
+                <Label htmlFor="cap-user" className="cursor-pointer">
+                  User Input
+                </Label>
+              </div>
+            </RadioGroup>
+
+            {captionMode === "user" && (
+              <div className="space-y-2 mt-2">
+                <Label htmlFor="newCaption">New Caption</Label>
                 <Textarea
-                  id="exactIssue"
-                  placeholder="Describe the specific issue in detail..."
-                  value={exactIssue}
-                  onChange={(e) => setExactIssue(e.target.value)}
-                  className="mt-1"
-                  rows={2}
+                  id="newCaption"
+                  placeholder="Write the exact caption…"
+                  value={newCaption}
+                  onChange={(e) => setNewCaption(e.target.value)}
+                  rows={3}
                 />
               </div>
             )}
           </div>
-          
+
+          {/* Thumbnail changes */}
           <div className="space-y-2">
-            <Label htmlFor="imageQuery">Image query to replace</Label>
-            <Input
-              id="imageQuery"
-              placeholder="Enter search terms for a better image..."
-              value={imageQuery}
-              onChange={(e) => setImageQuery(e.target.value)}
-            />
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="headlineImprovements">What can be better with headlines</Label>
-            <Textarea
-              id="headlineImprovements"
-              placeholder="Suggest improvements for the headlines..."
-              value={headlineImprovements}
-              onChange={(e) => setHeadlineImprovements(e.target.value)}
-              rows={2}
-            />
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="captionImprovements">What can be better with caption</Label>
-            <Textarea
-              id="captionImprovements"
-              placeholder="Suggest improvements for the caption..."
-              value={captionImprovements}
-              onChange={(e) => setCaptionImprovements(e.target.value)}
-              rows={2}
-            />
+            <Label>Thumbnail</Label>
+            <RadioGroup
+              value={thumbnailChange}
+              onValueChange={(v: ThumbChange) => setThumbnailChange(v)}
+              className="grid grid-cols-1 gap-2"
+            >
+              <div className="flex items-center space-x-2 rounded-md border p-3">
+                <RadioGroupItem id="th-headline" value="headline" />
+                <Label htmlFor="th-headline" className="cursor-pointer">
+                  Headline Change Only
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2 rounded-md border p-3">
+                <RadioGroupItem id="th-image" value="image" />
+                <Label htmlFor="th-image" className="cursor-pointer">
+                  Image Only
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2 rounded-md border p-3">
+                <RadioGroupItem id="th-both" value="both" />
+                <Label htmlFor="th-both" className="cursor-pointer">
+                  Both
+                </Label>
+              </div>
+            </RadioGroup>
+
+            {needsHeadline && (
+              <div className="space-y-2 mt-2">
+                <Label htmlFor="newHeadline">New Headline</Label>
+                <Input
+                  id="newHeadline"
+                  placeholder="Enter the new headline…"
+                  value={newHeadline}
+                  onChange={(e) => setNewHeadline(e.target.value)}
+                />
+              </div>
+            )}
+
+            {needsImage && (
+              <div className="space-y-2 mt-2">
+                <Label htmlFor="newImageUrl">New Image URL</Label>
+                <Input
+                  id="newImageUrl"
+                  placeholder="https://…"
+                  value={newImageUrl}
+                  onChange={(e) => setNewImageUrl(e.target.value)}
+                />
+                {newImageUrl && !isValidUrl(newImageUrl) && (
+                  <p className="text-xs text-red-500">
+                    Please enter a valid URL.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={!selectedReason}>
-            Submit Feedback
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            Submit
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+/* =======================
+   RSS Completion Dialog
+   ======================= */
+
+export interface RssCompletionPayload {
+  kind: "rss";
+  newCategory: string;
+  articleTitle: string;
+  articleHeadline: string;
+}
+
+interface RssCompletionDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (payload: RssCompletionPayload) => void;
+}
+
+export const RssCompletionDialog = ({
+  isOpen,
+  onClose,
+  onSubmit,
+}: RssCompletionDialogProps) => {
+  const [newCategory, setNewCategory] = useState("");
+  const [articleTitle, setArticleTitle] = useState("");
+  const [articleHeadline, setArticleHeadline] = useState("");
+
+  const canSubmit = useMemo(() => {
+    return (
+      newCategory.trim() !== "" &&
+      articleTitle.trim() !== "" &&
+      articleHeadline.trim() !== ""
+    );
+  }, [newCategory, articleTitle, articleHeadline]);
+
+  const handleSubmit = () => {
+    const payload: RssCompletionPayload = {
+      kind: "rss",
+      newCategory: newCategory.trim(),
+      articleTitle: articleTitle.trim(),
+      articleHeadline: articleHeadline.trim(),
+    };
+    onSubmit(payload);
+    // reset + close
+    setNewCategory("");
+    setArticleTitle("");
+    setArticleHeadline("");
+    onClose();
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[560px] max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Complete RSS Details</DialogTitle>
+          <DialogDescription>
+            RSS has incomplete information. Please provide the missing fields.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-4">
+          <div className="space-y-2">
+            <Label htmlFor="rssCategory">New Category</Label>
+            <Input
+              id="rssCategory"
+              placeholder="e.g., Public Health, Longevity, AI in Medicine"
+              value={newCategory}
+              onChange={(e) => setNewCategory(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="rssArticleTitle">Article Title</Label>
+            <Input
+              id="rssArticleTitle"
+              placeholder="Full article title…"
+              value={articleTitle}
+              onChange={(e) => setArticleTitle(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="rssArticleHeadline">Article Headline</Label>
+            <Input
+              id="rssArticleHeadline"
+              placeholder="Short, social-friendly headline…"
+              value={articleHeadline}
+              onChange={(e) => setArticleHeadline(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            Submit
           </Button>
         </DialogFooter>
       </DialogContent>
