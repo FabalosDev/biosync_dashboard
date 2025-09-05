@@ -239,7 +239,6 @@ function buildWebhookPayload(
       item?.source ||
       "",
     title: item?.title || item?.headline || item?.articleTitle || "",
-    // If you have an “INDEX” column value separately, include it too:
     index: Number.isFinite(toInt(item?.index))
       ? String(toInt(item?.index))
       : "",
@@ -267,11 +266,19 @@ function buildWebhookPayload(
     id: item?.id ?? "",
     link: lookup.link,
     ...content,
-    // reject extras (handlers will fill)
-    feedback: "",
+
+    // ✅ New fields from reject/edit dialog
+    agencyHeader: item?.agencyHeader || "", // override "UNK" if provided
+    newHeadline: item?.newHeadline || "",
+    newImageUrl: item?.newImageUrl || "",
+    newCaption: item?.newCaption || "",
+
+    // reject extras (handlers will fill later)
+    feedback: item?.feedback || "",
     image_query: "",
     headline_improvements: "",
     caption_improvements: "",
+
     // debug
     __debug: {
       uiType,

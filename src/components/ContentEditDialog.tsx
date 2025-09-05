@@ -13,22 +13,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
-/* =======================
-   Content Edit Dialog
-   ======================= */
-
 type CaptionMode = "keep" | "gpt" | "user";
 type ThumbChange = "keep" | "headline" | "image" | "both";
 
 export interface ContentEditPayload {
   kind: "content";
-  // intent: "reject" => no changes requested; "edit" => at least one change
   intent: "reject" | "edit";
   captionMode: CaptionMode;
   thumbnailChange: ThumbChange;
   newHeadline?: string;
   newImageUrl?: string;
   newCaption?: string;
+  /** ✅ New: editor override for agency header (e.g., CDC, NIH, VA). */
+  agencyHeader?: string;
 }
 
 interface ContentEditDialogProps {
@@ -36,11 +33,26 @@ interface ContentEditDialogProps {
   onClose: () => void;
   onSubmit: (payload: ContentEditPayload) => void;
 
-  // Prefill values from the item (optional, but recommended)
   initialHeadline?: string;
   initialImageUrl?: string;
   initialCaption?: string;
+
+  /** ✅ New: prefill the detected agency header (may be "UNK") */
+  initialAgencyHeader?: string; // e.g., "CDC", "NIH", "VA", "HHS", "GOV"
 }
+
+const QUICK_AGENCIES = [
+  "CDC",
+  "NIH",
+  "FDA",
+  "HHS",
+  "VA",
+  "CMS",
+  "HRSA",
+  "OSHA",
+  "DEA",
+  "GOV",
+];
 
 export const ContentEditDialog = ({
   isOpen,
@@ -49,6 +61,7 @@ export const ContentEditDialog = ({
   initialHeadline = "",
   initialImageUrl = "",
   initialCaption = "",
+  initialAgencyHeader = "",
 }: ContentEditDialogProps) => {
   const [captionMode, setCaptionMode] = useState<CaptionMode>("keep");
   const [thumbnailChange, setThumbnailChange] = useState<ThumbChange>("keep");
@@ -57,15 +70,17 @@ export const ContentEditDialog = ({
   const [newImageUrl, setNewImageUrl] = useState("");
   const [newCaption, setNewCaption] = useState(initialCaption);
 
-  // when opening, prefill the caption once
+  /** ✅ New: agency header override */
+  const [agencyHeader, setAgencyHeader] = useState(initialAgencyHeader || "");
+
   useEffect(() => {
     if (isOpen) {
-      // reset state and prefill
       setCaptionMode("keep");
       setThumbnailChange("keep");
       setNewHeadline("");
       setNewImageUrl("");
       setNewCaption(initialCaption || "");
+      setAgencyHeader(initialAgencyHeader || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -91,7 +106,6 @@ export const ContentEditDialog = ({
     }
   };
 
-  // optional-only: button always enabled; intent decided by content
   const hasCaptionChange =
     captionMode === "gpt" ||
     (captionMode === "user" && newCaption.trim() !== "");
@@ -111,6 +125,8 @@ export const ContentEditDialog = ({
       newImageUrl: hasImageChange ? newImageUrl.trim() : undefined,
       newCaption:
         captionMode === "user" ? newCaption.trim() || undefined : undefined,
+      /** ✅ include agencyHeader if editor typed something (including changing UNK) */
+      agencyHeader: agencyHeader.trim() || undefined,
     };
 
     onSubmit(payload);
@@ -129,11 +145,41 @@ export const ContentEditDialog = ({
           <DialogTitle>Content Edits (optional)</DialogTitle>
           <DialogDescription>
             Choose what you want to change. Leave everything as-is to{" "}
-            <strong>Reject</strong>. Any change → <strong>Keep & Edit</strong>.
+            <strong>Reject</strong>. Any change →{" "}
+            <strong>Keep &amp; Edit</strong>.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-4">
+          {/* ✅ New: Agency Header override */}
+          <div className="space-y-2">
+            <Label htmlFor="agencyHeader">Agency Header</Label>
+            <Input
+              id="agencyHeader"
+              placeholder='e.g., CDC, NIH, FDA, HHS (avoid "UNK")'
+              value={agencyHeader}
+              onChange={(e) => setAgencyHeader(e.target.value.toUpperCase())}
+            />
+            <div className="flex flex-wrap gap-2 pt-1">
+              {QUICK_AGENCIES.map((a) => (
+                <Button
+                  key={a}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="px-2 py-1"
+                  onClick={() => setAgencyHeader(a)}
+                >
+                  {a}
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              If detection shows <code>UNK</code>, set the correct agency here
+              so the thumbnail banner is accurate.
+            </p>
+          </div>
+
           {/* Caption section */}
           <div className="space-y-2">
             <Label>Caption</Label>
@@ -162,7 +208,7 @@ export const ContentEditDialog = ({
               </div>
             </RadioGroup>
 
-            {captionMode === "user" && (
+            {needsCaption && (
               <div className="space-y-2 mt-2">
                 <Label htmlFor="newCaption">New Caption</Label>
                 <Textarea
@@ -172,12 +218,6 @@ export const ContentEditDialog = ({
                   onChange={(e) => setNewCaption(e.target.value)}
                   rows={4}
                 />
-                {initialCaption && (
-                  <p className="text-xs text-muted-foreground">
-                    Tip: We pre-filled the current caption so you can tweak a
-                    sentence quickly.
-                  </p>
-                )}
               </div>
             )}
           </div>
@@ -211,7 +251,7 @@ export const ContentEditDialog = ({
               <div className="flex items-center space-x-2 rounded-md border p-3">
                 <RadioGroupItem id="th-both" value="both" />
                 <Label htmlFor="th-both" className="cursor-pointer">
-                  Both (headline & image)
+                  Both (headline &amp; image)
                 </Label>
               </div>
             </RadioGroup>
@@ -251,7 +291,6 @@ export const ContentEditDialog = ({
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          {/* Always enabled; we decide intent inside handleSubmit */}
           <Button onClick={handleSubmit}>
             {intent === "edit" ? "Keep & Submit Edits" : "Reject"}
           </Button>
