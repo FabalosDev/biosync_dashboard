@@ -172,15 +172,31 @@ function routeKey(contentType: string, sheet?: string) {
   return "content";
 }
 
-/** Build webhook payload — uses INDEX column if valid, with strong fallbacks */
+/** Build webhook payload — INDEX-aware with strong fallbacks + routing logic */
 function buildWebhookPayload(
   action: "approve" | "reject",
   contentType: string,
   item: any
 ) {
+  // ---------- helpers ----------
+  const toInt = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : NaN;
+  };
+  const isValidUrl = (s?: string) => {
+    if (!s) return false;
+    try {
+      const u = new URL(String(s).trim());
+      return !!u.protocol && !!u.host;
+    } catch {
+      return false;
+    }
+  };
+  const nonEmpty = (s?: string) => (s || "").trim() !== "";
+
+  // ---------- normalize type/route/sheet ----------
   const uiType = String(contentType || "").trim();
 
-  // Normalize type (service + route)
   const serviceType =
     uiType === "rssNews"
       ? "rssNews"
@@ -215,11 +231,7 @@ function buildWebhookPayload(
           ? "Dental RSS"
           : "text/image");
 
-  // Preferred row = INDEX col shown in UI (must be >=2)
-  const toInt = (v: any) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : NaN;
-  };
+  // ---------- preferred row ----------
   let row =
     toInt(item?.index) ||
     toInt(item?.rowNumber) ||
@@ -228,7 +240,7 @@ function buildWebhookPayload(
 
   if (!Number.isFinite(row) || row < 2) row = NaN;
 
-  // Extra lookup keys for backend fallback (pick only stable identifiers)
+  // ---------- lookup keys ----------
   const lookup = {
     uid: item?.uid || item?.id || "",
     link:
@@ -244,42 +256,149 @@ function buildWebhookPayload(
       : "",
   };
 
-  // Minimal content bits
+  // ---------- minimal content bits ----------
   const content = {
     title: lookup.title,
     caption: item?.caption || "",
     snippet: item?.contentSnippet || "",
   };
 
+  // ---------- inputs from edit dialog (may be empty) ----------
+  // caption track
+  type CaptionMode = "keep" | "gpt" | "user";
+  type ThumbChange = "keep" | "headline" | "image" | "both";
+
+  const captionMode = (item?.captionMode as CaptionMode) || "keep";
+  const thumbnailChange = (item?.thumbnailChange as ThumbChange) || "keep";
+  const newHeadline = String(item?.newHeadline || "").trim();
+  const newImageUrl = isValidUrl(item?.newImageUrl)
+    ? String(item?.newImageUrl).trim()
+    : "";
+  const newCaption = String(item?.newCaption || "").trim();
+  const agencyHeaderUI = String(item?.agencyHeader || "")
+    .trim()
+    .toUpperCase();
+
+  // existing (fallbacks from the item)
+  const existingHeadline = String(
+    item?.thumbHeadline || item?.headline || item?.title || ""
+  ).trim();
+  const existingImageUrl = isValidUrl(item?.imageUrl || item?.thumbnailUrl)
+    ? String(item?.imageUrl || item?.thumbnailUrl).trim()
+    : "";
+  const detectedAgencyHdr = String(
+    item?.agency_header ||
+      item?.agencyHeaderDetected ||
+      item?.display_agency ||
+      ""
+  )
+    .trim()
+    .toUpperCase();
+
+  // ---------- caption track logic ----------
+  const doCaptionGPT = captionMode === "gpt";
+  const doCaptionSaveUser = captionMode === "user" && nonEmpty(newCaption);
+  // (As-is => no caption action)
+
+  // ---------- thumbnail track logic ----------
+  const hasAgencyOverride = nonEmpty(agencyHeaderUI);
+  const hasUserHeadline = nonEmpty(newHeadline);
+  const hasUserImage = nonEmpty(newImageUrl);
+
+  let doBannerbear = false;
+  let doGPTImage = false;
+
+  switch (thumbnailChange) {
+    case "keep":
+      // Only reason to render is header fix
+      if (hasAgencyOverride) doBannerbear = true;
+      break;
+
+    case "headline":
+      // Always render via Bannerbear; headline may be new or existing
+      doBannerbear = true;
+      break;
+
+    case "image":
+      // If user provided image, BB; else GPT image gen
+      doBannerbear = hasUserImage;
+      doGPTImage = !hasUserImage;
+      break;
+
+    case "both":
+      if (hasUserHeadline && hasUserImage) {
+        doBannerbear = true;
+      } else if (hasUserHeadline && !hasUserImage) {
+        doGPTImage = true; // need image
+      } else if (!hasUserHeadline && hasUserImage) {
+        doBannerbear = true; // keep old headline
+      } else {
+        doGPTImage = true; // need both
+      }
+      break;
+  }
+
+  // ---------- pure reject? (no work at all) ----------
+  const isPureReject =
+    captionMode === "keep" && thumbnailChange === "keep" && !hasAgencyOverride;
+
+  // ---------- resolved values for downstream ----------
+  const resolvedHeadline = hasUserHeadline ? newHeadline : existingHeadline;
+
+  const resolvedImageUrl = hasUserImage ? newImageUrl : existingImageUrl;
+
+  // Prefer UI override; else detected; (if both empty, downstream can still decide)
+  const resolvedAgencyHeader = hasAgencyOverride
+    ? agencyHeaderUI
+    : detectedAgencyHdr;
+
+  // ---------- final payload ----------
   return {
+    // original routing identifiers
     action,
     contentType: serviceType,
     route,
     sheet,
-    // send both the numeric row (if valid) and lookup keys
+
+    // row + lookup
     row: Number.isFinite(row) ? row : null,
-    lookup, // ← let n8n find the row by value if row fails
-    // keep legacy fields for compatibility
+    lookup,
     index: toInt(item?.index) || 0,
     fallbackRow: toInt(item?.rowNumber) || 0,
     uid: lookup.uid,
     id: item?.id ?? "",
     link: lookup.link,
+
+    // content
     ...content,
 
-    // ✅ New fields from reject/edit dialog
-    agencyHeader: item?.agencyHeader || "", // override "UNK" if provided
-    newHeadline: item?.newHeadline || "",
-    newImageUrl: item?.newImageUrl || "",
-    newCaption: item?.newCaption || "",
+    // edit dialog echoes (raw inputs)
+    captionMode,
+    thumbnailChange,
+    agencyHeader: agencyHeaderUI, // UI override as sent
+    newHeadline,
+    newImageUrl,
+    newCaption,
 
-    // reject extras (handlers will fill later)
-    feedback: item?.feedback || "",
-    image_query: "",
-    headline_improvements: "",
-    caption_improvements: "",
+    // routing flags you can branch on in n8n
+    doCaptionGPT,
+    doCaptionSaveUser,
+    doBannerbear,
+    doGPTImage,
+    isPureReject,
 
-    // debug
+    // resolved values (what Bannerbear/GPT-image should actually use)
+    resolvedHeadline,
+    resolvedImageUrl,
+    resolvedAgencyHeader,
+
+    // optional feedback fields
+    feedback: item?.feedback || "", // rejection notes, etc.
+    image_query: item?.image_query || "",
+    headline_improvements: item?.headline_improvements || "",
+    caption_improvements: item?.caption_improvements || "",
+
+    // debug (optional)
     __debug: {
       uiType,
       serviceType,
@@ -287,6 +406,7 @@ function buildWebhookPayload(
       computedRow: row,
       hadIndex: !!item?.index,
       sheet,
+      detectedAgencyHdr,
     },
   };
 }
