@@ -1,4 +1,10 @@
 // src/components/ContentApprovalCard.tsx
+// One-file, cleaned, and fixed version
+// - No RejectionDialog
+// - Dialog overrides are merged into payload
+// - If newImageUrl is present → use it; GPT image won't run
+// - isPureReject only true when everything is truly kept
+
 import { useState, useMemo, useEffect } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,14 +16,16 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronUp,
-  Trash2,
 } from "lucide-react";
-import { RejectionDialog } from "./RejectionDialog";
 import { useToast } from "@/hooks/use-toast";
 import { postWebhook } from "@/services/webhookService";
 import { getDupInfoFromItem } from "@/utils/dup";
 import { ContentEditDialog } from "./ContentEditDialog";
 import { RssCompletionDialog } from "./RssCompletionDialog";
+
+// -----------------------------
+// Types
+// -----------------------------
 
 type ContentType =
   | "content"
@@ -39,7 +47,6 @@ interface ContentApprovalCardProps {
     headlineImprovements?: string,
     captionImprovements?: string
   ) => void;
-  showRejectionDialog?: boolean;
   contentType?: ContentType;
   buttonState?: "approved" | "rejected" | null;
   onUndo?: (item: any) => void;
@@ -47,7 +54,22 @@ interface ContentApprovalCardProps {
   showDeleteButton?: boolean;
 }
 
-/* ---------- tiny helpers ---------- */
+type CaptionMode = "keep" | "gpt" | "user";
+type ThumbChange = "keep" | "headline" | "image" | "both";
+
+type EditOverrides = {
+  captionMode?: CaptionMode;
+  thumbnailChange?: ThumbChange;
+  newHeadline?: string;
+  newImageUrl?: string;
+  newCaption?: string;
+  agencyHeader?: string;
+};
+
+// -----------------------------
+// Tiny helpers
+// -----------------------------
+
 const looksLikeUrl = (s?: string) =>
   typeof s === "string" && /^(https?:\/\/|data:image\/)/i.test(s.trim());
 const norm = (v: any) => (typeof v === "string" ? v.trim() : "");
@@ -130,73 +152,22 @@ const statusToBadge = (status?: string) => {
   }
 };
 
-/** Map UI tab → exact sheet/tab name */
-function sheetNameFor(contentType: string, item: any) {
-  const t = String(contentType || "");
-  if (t === "rssNews") return "HNN RSS";
-  if (t === "rssDentistry") return "Dental RSS";
-  if (t === "rss" || t === "rssMedia") return "Thumbnail System";
-  if (t === "news") return "HEALTH NEWS USA- THUMBNAILS";
-  if (t === "dentistry") return "DENTAL";
-  return item?.sheet || "text/image"; // content / regenerated
-}
+// -----------------------------
+// Payload builder
+// -----------------------------
 
-/** What the webhook expects */
-function contentTypeForWebhook(ct: string) {
-  const x = String(ct || "").trim();
-  if (x === "rssNews") return "rssNews";
-  if (x === "rssDentistry") return "rssDentistry";
-  if (x === "rss" || x === "rssMedia") return "rss"; // normalize media rss → "rss"
-  if (x === "regenerated") return "content";
-  return x; // "content" | "news" | "dentistry"
-}
-
-/** Optional router key for n8n (if you branch in your flow) */
-function routeKey(contentType: string, sheet?: string) {
-  const ct = String(contentType || "");
-  if (
-    ct === "rssNews" ||
-    ct === "rssDentistry" ||
-    ct === "rss" ||
-    ct === "rssMedia"
-  )
-    return "rss";
-  if (ct === "content" || ct === "regenerated") return "content";
-  if (ct === "news") return "news";
-  if (ct === "dentistry") return "dentistry";
-
-  const s = String(sheet || "");
-  if (/HNN RSS/i.test(s)) return "rssNews";
-  if (/Dental RSS/i.test(s)) return "rssDentistry";
-  if (/Thumbnail System/i.test(s)) return "rss";
-  return "content";
-}
-
-/** Build webhook payload — INDEX-aware with strong fallbacks + routing logic */
 function buildWebhookPayload(
   action: "approve" | "reject",
   contentType: string,
   item: any
 ) {
-  // ---------- helpers ----------
   const toInt = (v: any) => {
     const n = Number(v);
     return Number.isFinite(n) ? Math.trunc(n) : NaN;
   };
-  const isValidUrl = (s?: string) => {
-    if (!s) return false;
-    try {
-      const u = new URL(String(s).trim());
-      return !!u.protocol && !!u.host;
-    } catch {
-      return false;
-    }
-  };
   const nonEmpty = (s?: string) => (s || "").trim() !== "";
 
-  // ---------- normalize type/route/sheet ----------
   const uiType = String(contentType || "").trim();
-
   const serviceType =
     uiType === "rssNews"
       ? "rssNews"
@@ -231,16 +202,13 @@ function buildWebhookPayload(
           ? "Dental RSS"
           : "text/image");
 
-  // ---------- preferred row ----------
   let row =
     toInt(item?.index) ||
     toInt(item?.rowNumber) ||
     toInt(item?.row) ||
     (item?.actualArrayIndex != null ? toInt(item.actualArrayIndex) + 2 : NaN);
-
   if (!Number.isFinite(row) || row < 2) row = NaN;
 
-  // ---------- lookup keys ----------
   const lookup = {
     uid: item?.uid || item?.id || "",
     link:
@@ -256,36 +224,28 @@ function buildWebhookPayload(
       : "",
   };
 
-  // ---------- minimal content bits ----------
   const content = {
     title: lookup.title,
     caption: item?.caption || "",
     snippet: item?.contentSnippet || "",
   };
 
-  // ---------- inputs from edit dialog (may be empty) ----------
-  // caption track
-  type CaptionMode = "keep" | "gpt" | "user";
-  type ThumbChange = "keep" | "headline" | "image" | "both";
-
-  const captionMode = (item?.captionMode as CaptionMode) || "keep";
-  const thumbnailChange = (item?.thumbnailChange as ThumbChange) || "keep";
+  const captionMode: CaptionMode = (item?.captionMode as CaptionMode) || "keep";
+  const thumbnailChange: ThumbChange =
+    (item?.thumbnailChange as ThumbChange) || "keep";
   const newHeadline = String(item?.newHeadline || "").trim();
-  const newImageUrl = isValidUrl(item?.newImageUrl)
-    ? String(item?.newImageUrl).trim()
-    : "";
+  const newImageUrl = String(item?.newImageUrl || "").trim();
   const newCaption = String(item?.newCaption || "").trim();
   const agencyHeaderUI = String(item?.agencyHeader || "")
     .trim()
     .toUpperCase();
 
-  // existing (fallbacks from the item)
   const existingHeadline = String(
     item?.thumbHeadline || item?.headline || item?.title || ""
   ).trim();
-  const existingImageUrl = isValidUrl(item?.imageUrl || item?.thumbnailUrl)
-    ? String(item?.imageUrl || item?.thumbnailUrl).trim()
-    : "";
+  const existingImageUrl = String(
+    item?.imageUrl || item?.thumbnailUrl || ""
+  ).trim();
   const detectedAgencyHdr = String(
     item?.agency_header ||
       item?.agencyHeaderDetected ||
@@ -295,72 +255,63 @@ function buildWebhookPayload(
     .trim()
     .toUpperCase();
 
-  // ---------- caption track logic ----------
   const doCaptionGPT = captionMode === "gpt";
   const doCaptionSaveUser = captionMode === "user" && nonEmpty(newCaption);
-  // (As-is => no caption action)
 
-  // ---------- thumbnail track logic ----------
   const hasAgencyOverride = nonEmpty(agencyHeaderUI);
   const hasUserHeadline = nonEmpty(newHeadline);
-  const hasUserImage = nonEmpty(newImageUrl);
+  const hasUserImage = nonEmpty(newImageUrl); // IMPORTANT: any non-empty string counts
 
   let doBannerbear = false;
   let doGPTImage = false;
 
   switch (thumbnailChange) {
     case "keep":
-      // Only reason to render is header fix
       if (hasAgencyOverride) doBannerbear = true;
       break;
-
     case "headline":
-      // Always render via Bannerbear; headline may be new or existing
       doBannerbear = true;
       break;
-
     case "image":
-      // If user provided image, BB; else GPT image gen
-      doBannerbear = hasUserImage;
-      doGPTImage = !hasUserImage;
+      if (hasUserImage) {
+        doBannerbear = true;
+        doGPTImage = false;
+      } else {
+        doBannerbear = false;
+        doGPTImage = true;
+      }
       break;
-
     case "both":
       if (hasUserHeadline && hasUserImage) {
         doBannerbear = true;
+        doGPTImage = false;
       } else if (hasUserHeadline && !hasUserImage) {
-        doGPTImage = true; // need image
+        doBannerbear = false;
+        doGPTImage = true;
       } else if (!hasUserHeadline && hasUserImage) {
-        doBannerbear = true; // keep old headline
+        doBannerbear = true;
+        doGPTImage = false;
       } else {
-        doGPTImage = true; // need both
+        doBannerbear = false;
+        doGPTImage = true;
       }
       break;
   }
 
-  // ---------- pure reject? (no work at all) ----------
   const isPureReject =
     captionMode === "keep" && thumbnailChange === "keep" && !hasAgencyOverride;
 
-  // ---------- resolved values for downstream ----------
   const resolvedHeadline = hasUserHeadline ? newHeadline : existingHeadline;
-
   const resolvedImageUrl = hasUserImage ? newImageUrl : existingImageUrl;
-
-  // Prefer UI override; else detected; (if both empty, downstream can still decide)
   const resolvedAgencyHeader = hasAgencyOverride
     ? agencyHeaderUI
     : detectedAgencyHdr;
 
-  // ---------- final payload ----------
   return {
-    // original routing identifiers
     action,
     contentType: serviceType,
     route,
     sheet,
-
-    // row + lookup
     row: Number.isFinite(row) ? row : null,
     lookup,
     index: toInt(item?.index) || 0,
@@ -368,37 +319,25 @@ function buildWebhookPayload(
     uid: lookup.uid,
     id: item?.id ?? "",
     link: lookup.link,
-
-    // content
     ...content,
-
-    // edit dialog echoes (raw inputs)
     captionMode,
     thumbnailChange,
-    agencyHeader: agencyHeaderUI, // UI override as sent
+    agencyHeader: agencyHeaderUI,
     newHeadline,
     newImageUrl,
     newCaption,
-
-    // routing flags you can branch on in n8n
     doCaptionGPT,
     doCaptionSaveUser,
     doBannerbear,
     doGPTImage,
     isPureReject,
-
-    // resolved values (what Bannerbear/GPT-image should actually use)
     resolvedHeadline,
     resolvedImageUrl,
     resolvedAgencyHeader,
-
-    // optional feedback fields
-    feedback: item?.feedback || "", // rejection notes, etc.
+    feedback: item?.feedback || "",
     image_query: item?.image_query || "",
     headline_improvements: item?.headline_improvements || "",
     caption_improvements: item?.caption_improvements || "",
-
-    // debug (optional)
     __debug: {
       uiType,
       serviceType,
@@ -410,26 +349,29 @@ function buildWebhookPayload(
     },
   };
 }
-/* ---------- component ---------- */
+
+// -----------------------------
+// Component
+// -----------------------------
+
 export const ContentApprovalCard = ({
   item,
   onApprove,
   onReject,
-  showRejectionDialog = true,
   contentType = "content",
   buttonState = null,
   onUndo,
   onDelete,
   showDeleteButton = false,
 }: ContentApprovalCardProps) => {
-  const [rejectionDialogOpen, setRejectionDialogOpen] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const { toast } = useToast();
 
   const dupInfo = useMemo(() => getDupInfoFromItem(item), [item]);
-  // under other useState hooks:
+
+  // Dialog state
   const [contentDialogOpen, setContentDialogOpen] = useState(false);
   const [rssDialogOpen, setRssDialogOpen] = useState(false);
 
@@ -474,7 +416,7 @@ export const ContentApprovalCard = ({
     try {
       const payload = buildWebhookPayload("approve", contentType, item);
 
-      // NEW: payagan kung may valid row OR may lookup(uid/link)
+      // Allow if there's a valid row OR lookup(uid/link/index)
       const hasValidRow =
         Number.isFinite(payload.row as number) && (payload.row as number) >= 2;
       const hasLookup =
@@ -513,28 +455,43 @@ export const ContentApprovalCard = ({
   // when ContentEditDialog submits
   const handleContentDialogSubmit = (payload: {
     kind: "content";
-    captionMode: "gpt" | "user";
-    thumbnailChange: "headline" | "image" | "both";
+    intent: "reject" | "edit";
+    captionMode: CaptionMode;
+    thumbnailChange: ThumbChange;
     newHeadline?: string;
     newImageUrl?: string;
     newCaption?: string;
+    agencyHeader?: string;
   }) => {
-    // Reuse existing handleReject signature by packing fields
-    // feedback: short summary string for auditing
     const summary = `Caption:${payload.captionMode} | Thumb:${payload.thumbnailChange}`;
-    const imageQuery = ""; // not used in new flow; keep empty
+    const imageQuery = "";
     const headlineImprovements = payload.newHeadline || "";
     const captionImprovements = payload.newCaption || "";
 
-    // You ALSO likely want to send newImageUrl explicitly. We'll stash it in feedback tail for now,
-    // AND add it to webhook payload via a custom field (see below).
+    // Normalize & coerce: if user typed a URL but left radio on keep → treat as image change
+    const trimmedUrl = (payload.newImageUrl || "").trim();
+    const normalizedThumb: ThumbChange =
+      trimmedUrl &&
+      (payload.thumbnailChange === "keep" || !payload.thumbnailChange)
+        ? "image"
+        : payload.thumbnailChange;
+
+    const overrides: EditOverrides = {
+      captionMode: payload.captionMode,
+      thumbnailChange: normalizedThumb,
+      newHeadline: (payload.newHeadline || "").trim() || undefined,
+      newImageUrl: trimmedUrl || undefined,
+      newCaption: (payload.newCaption || "").trim() || undefined,
+      agencyHeader:
+        (payload.agencyHeader || "").trim().toUpperCase() || undefined,
+    };
+
     handleReject(
-      `${summary}${
-        payload.newImageUrl ? ` | ImgURL:${payload.newImageUrl}` : ""
-      }`,
+      `${summary}${trimmedUrl ? ` | ImgURL:${trimmedUrl}` : ""}`,
       imageQuery,
       headlineImprovements,
-      captionImprovements
+      captionImprovements,
+      overrides
     );
   };
 
@@ -545,7 +502,6 @@ export const ContentApprovalCard = ({
     articleTitle: string;
     articleHeadline: string;
   }) => {
-    // Map into existing reject fields (keeps your n8n flow backwards compatible)
     const feedback = `RSS Complete -> Category:${payload.newCategory}`;
     const imageQuery = "";
     const headlineImprovements = payload.articleHeadline;
@@ -563,31 +519,35 @@ export const ContentApprovalCard = ({
     feedback?: string,
     imageQuery?: string,
     headlineImprovements?: string,
-    captionImprovements?: string
+    captionImprovements?: string,
+    overrides?: EditOverrides
   ) => {
     if (isRejecting) return;
     setIsRejecting(true);
     try {
-      const payload = buildWebhookPayload("reject", contentType, item);
+      // Merge dialog overrides into item so payload sees the edits
+      const itemForPayload = overrides ? { ...item, ...overrides } : item;
+      const payload = buildWebhookPayload(
+        "reject",
+        contentType,
+        itemForPayload
+      );
+
       payload.feedback = feedback || "";
       payload.image_query = imageQuery || "";
-      if (feedback && /ImgURL:/.test(feedback)) {
-        // extract URL if we embedded it in the summary
+      if (feedback && /ImgURL:([^\s]+)$/.test(feedback)) {
         const m = feedback.match(/ImgURL:([^\s]+)$/);
         if (m?.[1]) (payload as any).new_image_url = m[1];
       }
-
       payload.headline_improvements = headlineImprovements || "";
       payload.caption_improvements = captionImprovements || "";
 
-      // NEW
       const hasValidRow =
         Number.isFinite(payload.row as number) && (payload.row as number) >= 2;
       const hasLookup =
         !!payload.lookup?.uid ||
         !!payload.lookup?.link ||
         !!payload.lookup?.index;
-
       if (!hasValidRow && !hasLookup) {
         throw new Error(
           `No row or lookup keys. dbg={index:${item?.index}, rowNumber:${item?.rowNumber}, actualArrayIndex:${item?.actualArrayIndex}}`
@@ -622,24 +582,7 @@ export const ContentApprovalCard = ({
     }
   };
 
-  // Which tabs should open a dialog on Reject?
-  const CT_NEEDS_DIALOG = new Set<string>([
-    "content",
-    "regenerated",
-    "news",
-    "dentistry",
-    "rssNews",
-    "rssDentistry",
-    "rss",
-    "rssMedia",
-  ]);
-
-  function needsRejectDialog(ct?: string) {
-    return CT_NEEDS_DIALOG.has(String(ct || "").trim());
-  }
-
   const onRejectClick = () => {
-    // Content-like types use ContentEditDialog; RSS-like use RssCompletionDialog
     const ct = String(contentType || "");
     if (
       ct === "content" ||
