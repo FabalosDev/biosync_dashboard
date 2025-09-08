@@ -167,6 +167,7 @@ function buildWebhookPayload(
   };
   const nonEmpty = (s?: string) => (s || "").trim() !== "";
 
+  // ---------- normalize type ----------
   const uiType = String(contentType || "").trim();
   const serviceType =
     uiType === "rssNews"
@@ -202,6 +203,7 @@ function buildWebhookPayload(
           ? "Dental RSS"
           : "text/image");
 
+  // ---------- row + lookup ----------
   let row =
     toInt(item?.index) ||
     toInt(item?.rowNumber) ||
@@ -224,43 +226,43 @@ function buildWebhookPayload(
       : "",
   };
 
-  const content = {
-    title: lookup.title,
-    caption: item?.caption || "",
-    snippet: item?.contentSnippet || "",
-  };
+  // ---------- RSS + edit inputs ----------
+  const newCategory = String(item?.newCategory || "").trim();
+  const articleTitle = String(item?.articleTitle || "").trim();
+  const articleHeadline = String(item?.articleHeadline || "").trim();
 
-  const captionMode: CaptionMode = (item?.captionMode as CaptionMode) || "keep";
-  const thumbnailChange: ThumbChange =
-    (item?.thumbnailChange as ThumbChange) || "keep";
-  const newHeadline = String(item?.newHeadline || "").trim();
+  const newHeadline = String(
+    item?.newHeadline ??
+      item?.reword ?? // for news
+      articleHeadline ?? // for rss
+      ""
+  ).trim();
+
+  const existingHeadline = String(
+    item?.thumbHeadline ??
+      item?.headline ??
+      item?.reword ?? // news fallback
+      item?.title ??
+      articleTitle ?? // rss fallback
+      ""
+  ).trim();
+
   const newImageUrl = String(item?.newImageUrl || "").trim();
   const newCaption = String(item?.newCaption || "").trim();
   const agencyHeaderUI = String(item?.agencyHeader || "")
     .trim()
     .toUpperCase();
 
-  const existingHeadline = String(
-    item?.thumbHeadline || item?.headline || item?.title || ""
-  ).trim();
-  const existingImageUrl = String(
-    item?.imageUrl || item?.thumbnailUrl || ""
-  ).trim();
-  const detectedAgencyHdr = String(
-    item?.agency_header ||
-      item?.agencyHeaderDetected ||
-      item?.display_agency ||
-      ""
-  )
-    .trim()
-    .toUpperCase();
-
-  const doCaptionGPT = captionMode === "gpt";
-  const doCaptionSaveUser = captionMode === "user" && nonEmpty(newCaption);
+  // ---------- routing flags ----------
+  const captionMode = (item?.captionMode as string) || "keep";
+  const thumbnailChange = (item?.thumbnailChange as string) || "keep";
 
   const hasAgencyOverride = nonEmpty(agencyHeaderUI);
   const hasUserHeadline = nonEmpty(newHeadline);
-  const hasUserImage = nonEmpty(newImageUrl); // IMPORTANT: any non-empty string counts
+  const hasUserImage = nonEmpty(newImageUrl);
+
+  let doCaptionGPT = captionMode === "gpt";
+  let doCaptionSaveUser = captionMode === "user" && nonEmpty(newCaption);
 
   let doBannerbear = false;
   let doGPTImage = false;
@@ -273,40 +275,35 @@ function buildWebhookPayload(
       doBannerbear = true;
       break;
     case "image":
-      if (hasUserImage) {
-        doBannerbear = true;
-        doGPTImage = false;
-      } else {
-        doBannerbear = false;
-        doGPTImage = true;
-      }
+      if (hasUserImage) doBannerbear = true;
+      else doGPTImage = true;
       break;
     case "both":
-      if (hasUserHeadline && hasUserImage) {
-        doBannerbear = true;
-        doGPTImage = false;
-      } else if (hasUserHeadline && !hasUserImage) {
-        doBannerbear = false;
-        doGPTImage = true;
-      } else if (!hasUserHeadline && hasUserImage) {
-        doBannerbear = true;
-        doGPTImage = false;
-      } else {
-        doBannerbear = false;
-        doGPTImage = true;
-      }
+      if (hasUserHeadline && hasUserImage) doBannerbear = true;
+      else if (hasUserHeadline && !hasUserImage) doGPTImage = true;
+      else if (!hasUserHeadline && hasUserImage) doBannerbear = true;
+      else doGPTImage = true;
       break;
   }
 
   const isPureReject =
     captionMode === "keep" && thumbnailChange === "keep" && !hasAgencyOverride;
 
+  // ---------- resolved ----------
   const resolvedHeadline = hasUserHeadline ? newHeadline : existingHeadline;
-  const resolvedImageUrl = hasUserImage ? newImageUrl : existingImageUrl;
+  const resolvedImageUrl = hasUserImage ? newImageUrl : "";
   const resolvedAgencyHeader = hasAgencyOverride
     ? agencyHeaderUI
-    : detectedAgencyHdr;
+    : String(
+        item?.agency_header ||
+          item?.agencyHeaderDetected ||
+          item?.display_agency ||
+          ""
+      )
+        .trim()
+        .toUpperCase();
 
+  // ---------- final payload ----------
   return {
     action,
     contentType: serviceType,
@@ -319,25 +316,41 @@ function buildWebhookPayload(
     uid: lookup.uid,
     id: item?.id ?? "",
     link: lookup.link,
-    ...content,
+
+    // overwrite title with resolved headline
+    title: resolvedHeadline || lookup.title,
+
+    // normal edit fields
     captionMode,
     thumbnailChange,
     agencyHeader: agencyHeaderUI,
     newHeadline,
     newImageUrl,
     newCaption,
+
+    // ✅ RSS fields
+    newCategory,
+    articleTitle,
+    articleHeadline,
+
+    // routing flags
     doCaptionGPT,
     doCaptionSaveUser,
     doBannerbear,
     doGPTImage,
     isPureReject,
+
+    // resolved values
     resolvedHeadline,
     resolvedImageUrl,
     resolvedAgencyHeader,
+
+    // optional feedback fields
     feedback: item?.feedback || "",
     image_query: item?.image_query || "",
     headline_improvements: item?.headline_improvements || "",
     caption_improvements: item?.caption_improvements || "",
+
     __debug: {
       uiType,
       serviceType,
@@ -345,11 +358,10 @@ function buildWebhookPayload(
       computedRow: row,
       hadIndex: !!item?.index,
       sheet,
-      detectedAgencyHdr,
+      detectedAgencyHdr: resolvedAgencyHeader,
     },
   };
 }
-
 // -----------------------------
 // Component
 // -----------------------------
@@ -496,22 +508,25 @@ export const ContentApprovalCard = ({
   };
 
   // when RssCompletionDialog submits
-  const handleRssDialogSubmit = (payload: {
+  const handleRssDialogSubmit = (p: {
     kind: "rss";
     newCategory: string;
     articleTitle: string;
     articleHeadline: string;
   }) => {
-    const feedback = `RSS Complete -> Category:${payload.newCategory}`;
-    const imageQuery = "";
-    const headlineImprovements = payload.articleHeadline;
-    const captionImprovements = payload.articleTitle;
+    const overrides = {
+      newCategory: p.newCategory?.trim() || undefined,
+      articleTitle: p.articleTitle?.trim() || undefined,
+      articleHeadline: p.articleHeadline?.trim() || undefined,
+    };
 
+    // Do NOT stuff category into feedback anymore
     handleReject(
-      feedback,
-      imageQuery,
-      headlineImprovements,
-      captionImprovements
+      "", // feedback
+      "", // imageQuery
+      p.articleHeadline || "",
+      p.articleTitle || "",
+      overrides // <<< pass overrides so builder sees them
     );
   };
 

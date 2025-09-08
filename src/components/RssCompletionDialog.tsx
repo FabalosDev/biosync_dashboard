@@ -70,29 +70,28 @@ export const RssCompletionDialog = ({
     >
       <DialogContent className="sm:max-w-[560px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Complete RSS Details (optional)</DialogTitle>
+          <DialogTitle>Complete RSS Details</DialogTitle>
           <DialogDescription>
-            Leave all fields blank to <strong>Reject</strong>. Enter any field
-            to
-            <strong> keep as Draft</strong> (incomplete; expand later).
+            Leave all fields blank to <strong>Reject</strong>. Fill in any field
+            to <strong>Keep as Draft</strong>.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-4">
           <div className="space-y-2">
-            <Label htmlFor="rssCategory">New Category (optional)</Label>
+            <Label htmlFor="rssCategory">Category</Label>
             <Input
               id="rssCategory"
-              placeholder="e.g., Public Health, Longevity, AI in Medicine"
+              placeholder="e.g., Public Health"
               value={newCategory}
               onChange={(e) => setNewCategory(e.target.value)}
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="rssArticleTitle">Article Title (optional)</Label>
+            <Label htmlFor="rssTitle">Article Title</Label>
             <Input
-              id="rssArticleTitle"
+              id="rssTitle"
               placeholder="Full article title…"
               value={articleTitle}
               onChange={(e) => setArticleTitle(e.target.value)}
@@ -100,12 +99,10 @@ export const RssCompletionDialog = ({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="rssArticleHeadline">
-              Article Headline (optional)
-            </Label>
+            <Label htmlFor="rssHeadline">Article Text</Label>
             <Input
-              id="rssArticleHeadline"
-              placeholder="Short, social-friendly headline…"
+              id="rssHeadline"
+              placeholder="Social-friendly headline…"
               value={articleHeadline}
               onChange={(e) => setArticleHeadline(e.target.value)}
             />
@@ -117,7 +114,7 @@ export const RssCompletionDialog = ({
             Cancel
           </Button>
           <Button onClick={handleSubmit}>
-            {hasAnyInput ? "Keep as Draft (Incomplete)" : "Reject"}
+            {hasAnyInput ? "Keep as Draft" : "Reject"}
           </Button>
         </DialogFooter>
       </DialogContent>

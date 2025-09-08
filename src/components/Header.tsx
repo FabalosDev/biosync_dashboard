@@ -54,7 +54,7 @@ export const Header = () => {
       <div className="text-center flex-1">
         <div className="flex items-center justify-center">
           <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-            Fabaverse – Content Management Dashboard
+            Fabaverse – Foxther's Universe
           </h1>
         </div>
       </div>
