@@ -22,6 +22,7 @@ import { postWebhook } from "@/services/webhookService";
 import { getDupInfoFromItem } from "@/utils/dup";
 import { ContentEditDialog } from "./ContentEditDialog";
 import { RssCompletionDialog } from "./RssCompletionDialog";
+import { captionLen, captionClass } from "@/utils/text";
 
 // -----------------------------
 // Types
@@ -775,6 +776,22 @@ export const ContentApprovalCard = ({
                   })()}
                 </span>
               )}
+
+              {(() => {
+                const len = captionLen(item.caption); // change to your exact field name from Sheets
+                return len > 0 ? (
+                  <span
+                    className={`text-xs px-2 py-1 rounded ${captionClass(
+                      len,
+                      2000,
+                      1800
+                    )}`}
+                    title="IG hard limit: 2200. Using 2000 as safe cap."
+                  >
+                    Caption: {len}/2000
+                  </span>
+                ) : null;
+              })()}
 
               {item.category && (
                 <span className="text-xs bg-purple-100 px-2 py-1 rounded text-purple-600">
