@@ -511,51 +511,68 @@ export const useContentManagement = () => {
     }
   }, [NEWS_SHEET_URL]);
 
+  // helper: normalize and match variants like "RSS Success", "rss_success✅", "rss_success_ok"
+  const isRssSuccess = (v: unknown) => {
+    const s = norm(String(v ?? ""))
+      .replace(/[^\w]+/g, "_") // unify spaces, dashes, emojis -> "_"
+      .replace(/^_+|_+$/g, ""); // trim underscores
+    return s === "RSS_Success" || s.startsWith("RSS_Success_");
+  };
+
+  const FINAL_STATUSES = new Set(["REJECT", "Approved", "Drafted", "POSTED"]);
+
   const fetchRssNewsData = useCallback(async () => {
     try {
       const res = await fetch(RSS_NEWS_SHEET_URL);
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const all = (json.table?.rows ?? []).map((row, idx): RssNewsRow => {
-        const c = row.c ?? [];
-        const index = Number(cellVal(c, RSS_NEWS_INDEX_COL)) || idx + 2;
+      const seen = new Set<string>();
 
-        const stateRaw = cellVal(c, RSS_STATUS_COL); // S
-        const s = norm(stateRaw);
-        const status: RssNewsRow["status"] =
-          s === "approved" || s === "posted"
-            ? "Approved"
-            : s === "rejected"
-            ? "Rejected"
-            : "Pending";
+      const rows = (json.table?.rows ?? [])
+        .map((row, idx): RssNewsRow | null => {
+          const c = row.c ?? [];
+          const index = Number(cellVal(c, RSS_NEWS_INDEX_COL)) || idx + 2;
 
-        return {
-          id: `hnn-${idx}`,
-          index,
-          rowNumber: index,
-          actualArrayIndex: idx,
-          title: cellVal(c, 9),
-          contentSnippet: cellVal(c, 11),
-          source: cellVal(c, 7),
-          link: cellVal(c, 5),
-          creator: cellVal(c, 8),
-          date: cellVal(c, 3),
-          proceedToProduction: stateRaw,
-          status,
-          timestamp: Date.now() - idx * 1000,
-          sheet: "HNN RSS",
-          uid: cellVal(c, 2),
-          type: cellVal(c, 12),
-          truthScore: cellVal(c, 13),
-          keywords: cellVal(c, 16),
-          dup: cellVal(c, 17),
-          category: cellVal(c, 19),
-          priority: cellVal(c, 20),
-        };
-      });
+          const stateRaw = rssStatusFrom(c); // ← cleaned raw S
+          if (stateRaw !== "RSS_Success") return null;
 
-      setRssNewsData(all.reverse());
+          const uid = String(cellVal(c, 2) ?? "");
+          const link = String(cellVal(c, 5) ?? "");
+          const key = uid || link;
+
+          if (key) {
+            if (seen.has(key)) return null;
+            seen.add(key);
+          }
+
+          return {
+            id: `hnn-${idx}`,
+            index,
+            rowNumber: index,
+            actualArrayIndex: idx,
+            title: cellVal(c, 9),
+            contentSnippet: cellVal(c, 11),
+            source: cellVal(c, 7),
+            link,
+            creator: cellVal(c, 8),
+            date: cellVal(c, 3),
+            proceedToProduction: stateRaw,
+            status: stateRaw, // keep raw token (e.g., "RSS_Success")
+            timestamp: Date.now() - idx * 1000,
+            sheet: "HNN RSS",
+            uid,
+            type: cellVal(c, 12),
+            truthScore: cellVal(c, 13),
+            keywords: cellVal(c, 16),
+            dup: cellVal(c, 17),
+            category: cellVal(c, 19),
+            priority: cellVal(c, 20),
+          };
+        })
+        .filter((x): x is RssNewsRow => Boolean(x));
+
+      setRssNewsData(rows.reverse());
     } catch (e) {
       console.error("Error fetching rssNews:", e);
       setRssNewsData([]);
@@ -568,45 +585,52 @@ export const useContentManagement = () => {
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const all = (json.table?.rows ?? []).map((row, idx): RssRow => {
-        const c = row.c ?? [];
-        const index = Number(cellVal(c, RSS_INDEX_COL)) || idx + 2;
+      const seen = new Set<string>();
 
-        const stateRaw = getRssStatus(c); // S
-        const s = norm(stateRaw);
-        const status: RssRow["status"] =
-          s === "approved" || s === "posted"
-            ? "Approved"
-            : s === "rejected"
-            ? "Rejected"
-            : "Pending";
+      const rows = (json.table?.rows ?? [])
+        .map((row, idx): RssRow | null => {
+          const c = row.c ?? [];
+          const index = Number(cellVal(c, RSS_INDEX_COL)) || idx + 2;
 
-        return {
-          id: `rss-${idx}`,
-          index,
-          rowNumber: index,
-          actualArrayIndex: idx,
-          title: cellVal(c, 9),
-          contentSnippet: cellVal(c, 11),
-          source: cellVal(c, 7),
-          link: cellVal(c, 5),
-          creator: cellVal(c, 8),
-          date: cellVal(c, 3),
-          proceedToProduction: stateRaw,
-          status,
-          timestamp: Date.now() - idx * 1000,
-          sheet: "Thumbnail System",
-          uid: cellVal(c, 2),
-          type: cellVal(c, 12),
-          truthScore: cellVal(c, 13),
-          keywords: cellVal(c, 16),
-          dup: cellVal(c, 17),
-          category: cellVal(c, 19),
-          priority: cellVal(c, 20),
-        };
-      });
+          const stateRaw = rssStatusFrom(c); // S
+          if (stateRaw !== "RSS_Success") return null;
 
-      setRssData(all.reverse());
+          const uid = String(cellVal(c, 2) ?? "");
+          const link = String(cellVal(c, 5) ?? "");
+          const key = uid || link;
+
+          if (key) {
+            if (seen.has(key)) return null;
+            seen.add(key);
+          }
+
+          return {
+            id: `rss-${idx}`,
+            index,
+            rowNumber: index,
+            actualArrayIndex: idx,
+            title: cellVal(c, 9),
+            contentSnippet: cellVal(c, 11),
+            source: cellVal(c, 7),
+            link,
+            creator: cellVal(c, 8),
+            date: cellVal(c, 3),
+            proceedToProduction: stateRaw,
+            status: stateRaw, // raw token
+            timestamp: Date.now() - idx * 1000,
+            sheet: "Thumbnail System",
+            uid,
+            type: cellVal(c, 12),
+            truthScore: cellVal(c, 13),
+            keywords: cellVal(c, 16),
+            dup: cellVal(c, 17),
+            category: cellVal(c, 19),
+            priority: cellVal(c, 20),
+          };
+        })
+        .filter((x): x is RssRow => Boolean(x));
+
+      setRssData(rows.reverse());
     } catch (e) {
       console.error("Error fetching RSS:", e);
       setRssData([]);
@@ -692,44 +716,52 @@ export const useContentManagement = () => {
       const txt = await res.text();
       const json = parseGViz(txt);
 
-      const all = (json.table?.rows ?? []).map((row, idx): RssDentistryRow => {
-        const c = row.c ?? [];
-        const index = Number(cellVal(c, RSS_DENTAL_INDEX_COL)) || idx + 2;
+      const seen = new Set<string>();
 
-        const stateRaw = cellVal(c, RSS_STATUS_COL); // S
-        const s = norm(stateRaw);
+      const rows = (json.table?.rows ?? [])
+        .map((row, idx): RssDentistryRow | null => {
+          const c = row.c ?? [];
+          const index = Number(cellVal(c, RSS_DENTAL_INDEX_COL)) || idx + 2;
 
-        return {
-          id: `rss-dent-${idx}`,
-          index,
-          rowNumber: index,
-          actualArrayIndex: idx,
-          title: cellVal(c, 9),
-          contentSnippet: cellVal(c, 11),
-          source: cellVal(c, 7),
-          link: cellVal(c, 5),
-          creator: cellVal(c, 8),
-          date: cellVal(c, 3),
-          proceedToProduction: stateRaw,
-          status:
-            s === "approved" || s === "posted"
-              ? "Approved"
-              : s === "rejected"
-              ? "Rejected"
-              : "Pending",
-          timestamp: Date.now() - idx * 1000,
-          sheet: "Dental RSS",
-          uid: cellVal(c, 2),
-          type: cellVal(c, 12),
-          truthScore: cellVal(c, 13),
-          keywords: cellVal(c, 16),
-          dup: cellVal(c, 17),
-          category: cellVal(c, 19),
-          priority: cellVal(c, 20),
-        };
-      });
+          const stateRaw = rssStatusFrom(c); // S
+          if (stateRaw !== "RSS_Success") return null;
 
-      setRssDentistryData(all.reverse());
+          const uid = String(cellVal(c, 2) ?? "");
+          const link = String(cellVal(c, 5) ?? "");
+          const key = uid || link;
+
+          if (key) {
+            if (seen.has(key)) return null;
+            seen.add(key);
+          }
+
+          return {
+            id: `rss-dent-${idx}`,
+            index,
+            rowNumber: index,
+            actualArrayIndex: idx,
+            title: cellVal(c, 9),
+            contentSnippet: cellVal(c, 11),
+            source: cellVal(c, 7),
+            link,
+            creator: cellVal(c, 8),
+            date: cellVal(c, 3),
+            proceedToProduction: stateRaw,
+            status: stateRaw, // raw token
+            timestamp: Date.now() - idx * 1000,
+            sheet: "Dental RSS",
+            uid,
+            type: cellVal(c, 12),
+            truthScore: cellVal(c, 13),
+            keywords: cellVal(c, 16),
+            dup: cellVal(c, 17),
+            category: cellVal(c, 19),
+            priority: cellVal(c, 20),
+          };
+        })
+        .filter((x): x is RssDentistryRow => Boolean(x));
+
+      setRssDentistryData(rows.reverse());
     } catch (e) {
       console.error("Error fetching Dentistry RSS:", e);
       setRssDentistryData([]);
@@ -752,9 +784,21 @@ export const useContentManagement = () => {
   }, []);
 
   /** ===== Filtering ===== */
+  // strip zero-width chars + trim (handles formula/webhook artifacts)
+  const STATUS_COL = 18; // column S (0-based)
+
+  const clean = (s: unknown) =>
+    String(s ?? "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .trim(); // trim + zero-width chars
+
+  const rssStatusFrom = (c: Array<{ v?: unknown; f?: unknown }>) =>
+    clean(cellVal(c, STATUS_COL)); // exact raw S with cleanup
+
   const filterUnprocessedItems = useCallback(
     (data: any[], contentType: string) => {
       return data.filter((item) => {
+        // hide items already acted on locally
         if (
           isItemProcessed({
             sheet: item.sheet,
@@ -764,19 +808,29 @@ export const useContentManagement = () => {
         ) {
           return false;
         }
+
         if (contentType === "content" || contentType === "dentistry") {
           return isPendingApproval((item as any).columnHStatus);
         }
+
         if (contentType === "news") {
+          // your News rows already set status = "Pending" by design
           return (item as NewsRow).status === "Pending";
         }
+
         if (
           contentType === "rss" ||
           contentType === "rssNews" ||
           contentType === "rssDentistry"
         ) {
-          return (item as any).status === "Pending";
+          // ✅ For all RSS tabs, only show exact RSS_Success from col S
+          // Prefer the raw S value you stored in proceedToProduction
+          const s = clean(
+            (item as any).proceedToProduction ?? (item as any).status
+          );
+          return s === "RSS_Success";
         }
+
         return false;
       });
     },
