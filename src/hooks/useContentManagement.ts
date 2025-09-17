@@ -346,6 +346,36 @@ export const useContentManagement = () => {
     );
   };
 
+  /** ===== UI helper ===== */
+  // Buttons should show for RSS tabs when col S is exactly "RSS_Success";
+  // for non-RSS tabs, keep your existing "Pending"/Pending Approval logic.
+  const isActionable = useCallback(
+    (item: any) => {
+      const sheet = String(item?.sheet ?? "");
+      // prefer the raw S value you stored; fallback to status
+      const s = String(item?.proceedToProduction ?? item?.status ?? "")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "") // strip zero-width
+        .trim();
+
+      // RSS tabs
+      if (
+        sheet === "Thumbnail System" ||
+        sheet === "HNN RSS" ||
+        sheet === "Dental RSS"
+      ) {
+        return s === "RSS_Success";
+      }
+
+      // Non-RSS tabs (content/news/dentistry)
+      if (typeof item?.status === "string" && item.status === "Pending")
+        return true;
+      if ("columnHStatus" in (item ?? {}))
+        return isPendingApproval(item.columnHStatus);
+      return false;
+    },
+    [isPendingApproval]
+  );
+
   /** ===== Fetchers ===== */
 
   const fetchContentData = useCallback(async () => {
@@ -558,7 +588,7 @@ export const useContentManagement = () => {
             creator: cellVal(c, 8),
             date: cellVal(c, 3),
             proceedToProduction: stateRaw,
-            status: stateRaw, // keep raw token (e.g., "RSS_Success")
+            status: "Pending", // keep raw token (e.g., "RSS_Success")
             timestamp: Date.now() - idx * 1000,
             sheet: "HNN RSS",
             uid,
@@ -616,7 +646,7 @@ export const useContentManagement = () => {
             creator: cellVal(c, 8),
             date: cellVal(c, 3),
             proceedToProduction: stateRaw,
-            status: stateRaw, // raw token
+            status: "Pending", // raw token
             timestamp: Date.now() - idx * 1000,
             sheet: "Thumbnail System",
             uid,
@@ -747,7 +777,7 @@ export const useContentManagement = () => {
             creator: cellVal(c, 8),
             date: cellVal(c, 3),
             proceedToProduction: stateRaw,
-            status: stateRaw, // raw token
+            status: "Pending", // raw token
             timestamp: Date.now() - idx * 1000,
             sheet: "Dental RSS",
             uid,
@@ -795,6 +825,7 @@ export const useContentManagement = () => {
   const rssStatusFrom = (c: Array<{ v?: unknown; f?: unknown }>) =>
     clean(cellVal(c, STATUS_COL)); // exact raw S with cleanup
 
+  /*
   const filterUnprocessedItems = useCallback(
     (data: any[], contentType: string) => {
       return data.filter((item) => {
@@ -835,6 +866,27 @@ export const useContentManagement = () => {
       });
     },
     [isItemProcessed]
+  ); */
+
+  /** ===== Filtering ===== */
+  const filterUnprocessedItems = useCallback(
+    (data: any[], _contentType: string) => {
+      return data.filter((item) => {
+        // hide items already acted on locally
+        if (
+          isItemProcessed({
+            sheet: item.sheet,
+            id: item.id,
+            rowNumber: item.rowNumber,
+          })
+        ) {
+          return false;
+        }
+        // single source of truth for actionability
+        return isActionable(item);
+      });
+    },
+    [isItemProcessed, isActionable]
   );
 
   /** ===== Stats ===== */
